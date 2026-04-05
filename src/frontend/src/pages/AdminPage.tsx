@@ -261,6 +261,7 @@ function ProductForm({
 // ── Products Tab ──────────────────────────────────────────────────────────────
 function ProductsTab() {
   const { products, addProduct, updateProduct, deleteProduct } = useProducts();
+  const { isAdmin } = useGuccora();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
 
@@ -297,6 +298,10 @@ function ProductsTab() {
   }
 
   function handleDelete(id: string) {
+    if (!isAdmin) {
+      alert("Only admin can delete products");
+      return;
+    }
     if (!window.confirm("Delete this product? This cannot be undone.")) return;
     deleteProduct(id);
     toast.success("Product deleted");
@@ -415,14 +420,16 @@ function ProductsTab() {
                     >
                       <Edit2 size={12} />
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(product.id)}
-                      className="w-7 h-7 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 flex items-center justify-center transition-colors"
-                      data-ocid={`admin.product.delete_button.${i + 1}`}
-                    >
-                      <Trash2 size={12} />
-                    </button>
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(product.id)}
+                        className="w-7 h-7 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 flex items-center justify-center transition-colors"
+                        data-ocid={`admin.product.delete_button.${i + 1}`}
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    )}
                   </div>
                 </div>
               ),
