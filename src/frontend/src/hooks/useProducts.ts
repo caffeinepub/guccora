@@ -6,7 +6,6 @@ import {
   onSnapshot,
   orderBy,
   query,
-  serverTimestamp,
   updateDoc,
 } from "firebase/firestore";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -44,20 +43,22 @@ function saveProductsToStorage(products: Product[]): void {
 
 export function useProducts() {
   const [products, setProducts] = useState<Product[]>(loadProductsFromStorage);
-  // Track whether Firestore has delivered at least one non-empty snapshot
+  // Track whether Firestore has delivered at least one snapshot
   const firestoreLoadedRef = useRef(false);
 
   // Subscribe to Firestore products collection in real time
   useEffect(() => {
     if (!isFirebaseConfigured) return;
 
-    // Query all products ordered by createdAt descending
+    // Order by createdAt — using numeric timestamps (Date.now()) avoids
+    // the null-timestamp problem that serverTimestamp() causes on the first
+    // optimistic local snapshot, which would exclude new docs from the query.
     const q = query(collection(db, "products"), orderBy("createdAt", "desc"));
 
     const unsub = onSnapshot(
       q,
       (snapshot) => {
-        // Map ALL docs — never filter or skip
+        // Map ALL docs — Firestore sends the FULL collection on every change
         const firestoreProducts: Product[] = snapshot.docs.map(
           (docSnap) =>
             ({
@@ -66,17 +67,14 @@ export function useProducts() {
             }) as Product,
         );
 
-        // Mark Firestore as having delivered data (even if empty)
         firestoreLoadedRef.current = true;
 
-        // Always replace state with what Firestore says is the full collection
-        // This is correct — Firestore sends the FULL snapshot every time
+        // Replace state with exactly what Firestore returns (full collection)
         setProducts(firestoreProducts);
         saveProductsToStorage(firestoreProducts);
       },
       () => {
-        // Firestore error — fall back to localStorage only if we haven't
-        // received a valid Firestore snapshot yet
+        // Firestore error — keep localStorage data if Firestore never responded
         if (!firestoreLoadedRef.current) {
           const local = loadProductsFromStorage();
           if (local.length > 0) setProducts(local);
@@ -89,23 +87,29 @@ export function useProducts() {
 
   const addProduct = useCallback(
     async (data: Omit<Product, "id" | "createdAt">) => {
+      // Use Date.now() instead of serverTimestamp() so that:
+      // 1. The value is immediately available (no null on optimistic write)
+      // 2. orderBy("createdAt") works correctly from the first snapshot
+      // 3. Each product gets a unique timestamp — no overwrites
+      const createdAt = Date.now();
+
       if (isFirebaseConfigured) {
         try {
-          // addDoc creates a NEW document with a unique auto-generated ID
-          // serverTimestamp() ensures correct ordering on the server
+          // addDoc() always creates a NEW document with a unique auto-generated ID
+          // It NEVER overwrites an existing document
           await addDoc(collection(db, "products"), {
             ...data,
-            createdAt: serverTimestamp(),
+            createdAt,
           });
-          // onSnapshot will automatically update state with the new product
-          // No need to manually update state here
+          // onSnapshot listener above will automatically update state
+          // No manual setProducts() needed here
         } catch (err) {
           console.error("Firestore addProduct failed:", err);
           // Fallback: add to localStorage only
           const localProduct: Product = {
             ...data,
             id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-            createdAt: Date.now(),
+            createdAt,
           };
           setProducts((prev) => {
             const next = [localProduct, ...prev];
@@ -118,7 +122,7 @@ export function useProducts() {
         const localProduct: Product = {
           ...data,
           id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          createdAt: Date.now(),
+          createdAt,
         };
         setProducts((prev) => {
           const next = [localProduct, ...prev];
