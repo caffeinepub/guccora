@@ -264,8 +264,8 @@ function ProductsTab() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
 
-  function handleAdd(form: ProductFormState) {
-    addProduct({
+  async function handleAdd(form: ProductFormState) {
+    await addProduct({
       name: form.name,
       description: form.description,
       price: Number.parseFloat(form.price),
@@ -297,6 +297,7 @@ function ProductsTab() {
   }
 
   function handleDelete(id: string) {
+    if (!window.confirm("Delete this product? This cannot be undone.")) return;
     deleteProduct(id);
     toast.success("Product deleted");
   }

@@ -1,9 +1,9 @@
 import {
+  addDoc,
   collection,
   deleteDoc,
   doc,
   onSnapshot,
-  setDoc,
   updateDoc,
 } from "firebase/firestore";
 import { useCallback, useEffect, useState } from "react";
@@ -20,10 +20,6 @@ export type Product = {
 };
 
 const PRODUCTS_KEY = "guccora_products";
-
-function generateId(): string {
-  return Math.random().toString(36).substring(2, 12);
-}
 
 function loadProductsFromStorage(): Product[] {
   try {
@@ -76,27 +72,49 @@ export function useProducts() {
     return () => unsub();
   }, []);
 
-  const addProduct = useCallback((data: Omit<Product, "id" | "createdAt">) => {
-    const newProduct: Product = {
-      ...data,
-      id: generateId(),
-      createdAt: Date.now(),
-    };
+  const addProduct = useCallback(
+    async (data: Omit<Product, "id" | "createdAt">) => {
+      const createdAt = Date.now();
 
-    // Optimistically update localStorage and state
-    setProducts((prev) => {
-      const next = [newProduct, ...prev];
-      saveProductsToStorage(next);
-      return next;
-    });
-
-    // Write to Firestore if configured
-    if (isFirebaseConfigured) {
-      setDoc(doc(db, "products", newProduct.id), newProduct).catch(() => {
-        // ignore — localStorage already updated
-      });
-    }
-  }, []);
+      if (isFirebaseConfigured) {
+        // Use addDoc so Firestore auto-generates a unique document ID
+        // onSnapshot will update state automatically after write
+        await addDoc(collection(db, "products"), {
+          ...data,
+          createdAt,
+        }).catch(() => {
+          // Firestore failed — fall back to localStorage-only
+          const fallbackProduct: Product = {
+            ...data,
+            id:
+              Math.random().toString(36).substring(2, 12) +
+              Date.now().toString(36),
+            createdAt,
+          };
+          setProducts((prev) => {
+            const next = [fallbackProduct, ...prev];
+            saveProductsToStorage(next);
+            return next;
+          });
+        });
+      } else {
+        // Firestore not configured — save to localStorage only
+        const newProduct: Product = {
+          ...data,
+          id:
+            Math.random().toString(36).substring(2, 12) +
+            Date.now().toString(36),
+          createdAt,
+        };
+        setProducts((prev) => {
+          const next = [newProduct, ...prev];
+          saveProductsToStorage(next);
+          return next;
+        });
+      }
+    },
+    [],
+  );
 
   const updateProduct = useCallback(
     (id: string, data: Partial<Omit<Product, "id" | "createdAt">>) => {
