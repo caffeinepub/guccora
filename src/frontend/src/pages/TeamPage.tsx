@@ -22,6 +22,7 @@ type StoredUser = {
   referralCode: string;
   sponsorId: string | null;
   sponsorCode?: string | null;
+  referredBy?: string | null;
   isActive: boolean;
   createdAt: number;
   wallet?: number;
@@ -209,14 +210,37 @@ export function TeamPage() {
   const { userData, currentUser } = useGuccora();
   const [viewMode, setViewMode] = useState<"list" | "tree">("list");
 
-  // Base users from localStorage (always available, no async)
-  const [localUsers, _setLocalUsers] = useState<StoredUser[]>(() => {
+  // Base users from localStorage (reactive: re-reads on storage changes)
+  const [localUsers, setLocalUsers] = useState<StoredUser[]>(() => {
     try {
       return JSON.parse(localStorage.getItem("users") || "[]") as StoredUser[];
     } catch {
       return [];
     }
   });
+
+  // Re-read localStorage whenever it changes (new registrations from same or other tabs)
+  useEffect(() => {
+    function refreshLocal() {
+      try {
+        const users = JSON.parse(
+          localStorage.getItem("users") || "[]",
+        ) as StoredUser[];
+        setLocalUsers(users);
+      } catch {
+        // ignore
+      }
+    }
+
+    // Poll every 2 seconds to catch same-tab changes (registration doesn't fire storage event)
+    const interval = setInterval(refreshLocal, 2000);
+    // Also listen for cross-tab changes
+    window.addEventListener("storage", refreshLocal);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("storage", refreshLocal);
+    };
+  }, []);
 
   // Firestore live users (overrides localStorage when configured)
   const [firestoreUsers, setFirestoreUsers] = useState<StoredUser[]>([]);
@@ -254,10 +278,11 @@ export function TeamPage() {
   const currentUserId = currentUser?.id;
   const currentUserReferralCode = userData.referralCode;
 
-  // Direct team: users whose sponsorId matches current user's referralCode or id
+  // Direct team: users who used current user's referral code during signup
   const directTeam = useMemo(() => {
     return allUsers.filter(
       (u) =>
+        u.referredBy === currentUserReferralCode ||
         u.sponsorId === currentUserReferralCode ||
         u.sponsorId === currentUserId ||
         u.sponsorCode === currentUserReferralCode,
@@ -293,7 +318,10 @@ export function TeamPage() {
     while (queue.length > 0) {
       const { user, level } = queue.shift()!;
       const downline = allUsers.filter(
-        (u) => u.sponsorId === user.referralCode || u.sponsorId === user.id,
+        (u) =>
+          u.referredBy === user.referralCode ||
+          u.sponsorId === user.referralCode ||
+          u.sponsorId === user.id,
       );
       for (const d of downline) {
         if (!visited.has(d.id)) {
@@ -329,7 +357,10 @@ export function TeamPage() {
     function buildFromSponsor(user: StoredUser, depth: number): TreeNode {
       const children = allUsers
         .filter(
-          (u) => u.sponsorId === user.referralCode || u.sponsorId === user.id,
+          (u) =>
+            u.referredBy === user.referralCode ||
+            u.sponsorId === user.referralCode ||
+            u.sponsorId === user.id,
         )
         .map((child) => buildFromSponsor(child, depth + 1));
       return {

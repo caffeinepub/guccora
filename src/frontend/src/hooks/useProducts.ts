@@ -4,9 +4,12 @@ import {
   deleteDoc,
   doc,
   onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
   updateDoc,
 } from "firebase/firestore";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { db, isFirebaseConfigured } from "../firebase";
 
 export type Product = {
@@ -41,31 +44,43 @@ function saveProductsToStorage(products: Product[]): void {
 
 export function useProducts() {
   const [products, setProducts] = useState<Product[]>(loadProductsFromStorage);
+  // Track whether Firestore has delivered at least one non-empty snapshot
+  const firestoreLoadedRef = useRef(false);
 
-  // Subscribe to Firestore products if configured
+  // Subscribe to Firestore products collection in real time
   useEffect(() => {
     if (!isFirebaseConfigured) return;
 
+    // Query all products ordered by createdAt descending
+    const q = query(collection(db, "products"), orderBy("createdAt", "desc"));
+
     const unsub = onSnapshot(
-      collection(db, "products"),
+      q,
       (snapshot) => {
-        const firestoreProducts: Product[] = [];
-        for (const docSnap of snapshot.docs) {
-          firestoreProducts.push({
-            id: docSnap.id,
-            ...docSnap.data(),
-          } as Product);
-        }
-        // Sort by createdAt descending
-        firestoreProducts.sort(
-          (a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0),
+        // Map ALL docs — never filter or skip
+        const firestoreProducts: Product[] = snapshot.docs.map(
+          (docSnap) =>
+            ({
+              id: docSnap.id,
+              ...docSnap.data(),
+            }) as Product,
         );
+
+        // Mark Firestore as having delivered data (even if empty)
+        firestoreLoadedRef.current = true;
+
+        // Always replace state with what Firestore says is the full collection
+        // This is correct — Firestore sends the FULL snapshot every time
         setProducts(firestoreProducts);
         saveProductsToStorage(firestoreProducts);
       },
       () => {
-        // Firestore error — fall back to localStorage
-        setProducts(loadProductsFromStorage());
+        // Firestore error — fall back to localStorage only if we haven't
+        // received a valid Firestore snapshot yet
+        if (!firestoreLoadedRef.current) {
+          const local = loadProductsFromStorage();
+          if (local.length > 0) setProducts(local);
+        }
       },
     );
 
@@ -74,40 +89,39 @@ export function useProducts() {
 
   const addProduct = useCallback(
     async (data: Omit<Product, "id" | "createdAt">) => {
-      const createdAt = Date.now();
-
       if (isFirebaseConfigured) {
-        // Use addDoc so Firestore auto-generates a unique document ID
-        // onSnapshot will update state automatically after write
-        await addDoc(collection(db, "products"), {
-          ...data,
-          createdAt,
-        }).catch(() => {
-          // Firestore failed — fall back to localStorage-only
-          const fallbackProduct: Product = {
+        try {
+          // addDoc creates a NEW document with a unique auto-generated ID
+          // serverTimestamp() ensures correct ordering on the server
+          await addDoc(collection(db, "products"), {
             ...data,
-            id:
-              Math.random().toString(36).substring(2, 12) +
-              Date.now().toString(36),
-            createdAt,
+            createdAt: serverTimestamp(),
+          });
+          // onSnapshot will automatically update state with the new product
+          // No need to manually update state here
+        } catch (err) {
+          console.error("Firestore addProduct failed:", err);
+          // Fallback: add to localStorage only
+          const localProduct: Product = {
+            ...data,
+            id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            createdAt: Date.now(),
           };
           setProducts((prev) => {
-            const next = [fallbackProduct, ...prev];
+            const next = [localProduct, ...prev];
             saveProductsToStorage(next);
             return next;
           });
-        });
+        }
       } else {
-        // Firestore not configured — save to localStorage only
-        const newProduct: Product = {
+        // No Firebase — use localStorage only
+        const localProduct: Product = {
           ...data,
-          id:
-            Math.random().toString(36).substring(2, 12) +
-            Date.now().toString(36),
-          createdAt,
+          id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          createdAt: Date.now(),
         };
         setProducts((prev) => {
-          const next = [newProduct, ...prev];
+          const next = [localProduct, ...prev];
           saveProductsToStorage(next);
           return next;
         });
@@ -118,16 +132,17 @@ export function useProducts() {
 
   const updateProduct = useCallback(
     (id: string, data: Partial<Omit<Product, "id" | "createdAt">>) => {
+      // Update local state immediately
       setProducts((prev) => {
         const next = prev.map((p) => (p.id === id ? { ...p, ...data } : p));
         saveProductsToStorage(next);
         return next;
       });
 
-      // Update in Firestore if configured
-      if (isFirebaseConfigured) {
+      // Sync to Firestore for real documents (not local-only)
+      if (isFirebaseConfigured && !id.startsWith("local_")) {
         updateDoc(doc(db, "products", id), data).catch(() => {
-          // ignore
+          // ignore — local state already updated
         });
       }
     },
@@ -135,14 +150,15 @@ export function useProducts() {
   );
 
   const deleteProduct = useCallback((id: string) => {
+    // Remove from local state immediately
     setProducts((prev) => {
       const next = prev.filter((p) => p.id !== id);
       saveProductsToStorage(next);
       return next;
     });
 
-    // Delete from Firestore if configured
-    if (isFirebaseConfigured) {
+    // Delete from Firestore for real documents
+    if (isFirebaseConfigured && !id.startsWith("local_")) {
       deleteDoc(doc(db, "products", id)).catch(() => {
         // ignore
       });

@@ -1,9 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { CreditCard, Package } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useProducts } from "../hooks/useProducts";
 import type { Product } from "../hooks/useProducts";
-
-const PRODUCTS_KEY = "guccora_products";
 
 // Per-price Razorpay payment links
 const RAZORPAY_LINKS: Record<number, string> = {
@@ -54,26 +52,11 @@ function PlanTypeBadge({ planType }: { planType: string }) {
 }
 
 export function ProductsPage() {
-  const [products, setProducts] = useState<Product[]>([]);
+  // Use the hook directly — gets real-time Firestore updates
+  const { products } = useProducts();
 
-  // Load products from localStorage
-  useEffect(() => {
-    function loadFromStorage() {
-      try {
-        const stored = localStorage.getItem(PRODUCTS_KEY);
-        if (stored) setProducts(JSON.parse(stored) as Product[]);
-        else setProducts([]);
-      } catch {
-        // ignore
-      }
-    }
-    loadFromStorage();
-    window.addEventListener("storage", loadFromStorage);
-    return () => window.removeEventListener("storage", loadFromStorage);
-  }, []);
-
-  function handleBuyNow(price: number) {
-    const link = getRazorpayLink(price);
+  function handleBuyNow(product: Product) {
+    const link = getRazorpayLink(product.price);
     window.open(link, "_blank", "noopener,noreferrer");
   }
 
@@ -147,7 +130,7 @@ export function ProductsPage() {
                 {/* Buy Now Button */}
                 <div className="mt-3">
                   <Button
-                    onClick={() => handleBuyNow(product.price)}
+                    onClick={() => handleBuyNow(product)}
                     className="w-full bg-gold hover:bg-gold-light text-black font-bold h-11 rounded-xl text-sm flex items-center justify-center gap-2"
                     data-ocid={`products.buy_now.button.${idx + 1}`}
                   >

@@ -585,6 +585,7 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         phone: cleanPhone,
         password: cleanPass,
         sponsorId: sponsorId,
+        referredBy: sponsorCode, // the referral code used during signup
         position: position ?? "left",
         parentId: null,
         leftChild: null,
