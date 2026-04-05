@@ -1,4 +1,4 @@
-import { doc, setDoc, updateDoc } from "firebase/firestore";
+import { doc, setDoc } from "firebase/firestore";
 import {
   type ReactNode,
   createContext,
@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 import { db } from "../firebase";
-import type { FirestoreUser, UserStatus } from "../utils/mlmTree";
+import type { FirestoreUser } from "../utils/mlmTree";
 
 export type Plan = {
   id: string;
@@ -67,7 +67,6 @@ export type TeamMember = {
   level: number;
   planId: string | null;
   isActive: boolean;
-  userStatus: UserStatus;
   referralCode: string;
   joinedAt: number;
 };
@@ -109,7 +108,6 @@ export type UserData = {
   planExpiry: number | null;
   planStatus: PlanStatus;
   isActive: boolean;
-  userStatus: UserStatus;
   walletBalance: number;
   directIncome: number;
   levelIncome: number;
@@ -204,23 +202,6 @@ function generateId(): string {
   return Math.random().toString(36).substring(2, 12);
 }
 
-function saveUserToUsersArray(
-  userId: string,
-  updates: Record<string, unknown>,
-) {
-  try {
-    const raw = localStorage.getItem("users");
-    const users: FirestoreUser[] = raw ? JSON.parse(raw) : [];
-    const idx = users.findIndex((u) => u.id === userId);
-    if (idx !== -1) {
-      users[idx] = { ...users[idx], ...updates };
-      localStorage.setItem("users", JSON.stringify(users));
-    }
-  } catch (e) {
-    console.error("saveUserToUsersArray error", e);
-  }
-}
-
 function createEmptyData(): UserData {
   return {
     name: "",
@@ -231,7 +212,6 @@ function createEmptyData(): UserData {
     planExpiry: null,
     planStatus: "none",
     isActive: false,
-    userStatus: "inactive",
     walletBalance: 0,
     directIncome: 0,
     levelIncome: 0,
@@ -301,7 +281,7 @@ type GuccoraContextType = {
   ) => void;
   getWalletMap: () => Record<string, number>;
   adminSendNotification: (title: string, message: string) => void;
-  adminSetUserStatus: (userId: string, status: UserStatus) => void;
+  adminToggleUserActive: () => void;
 };
 
 const GuccoraContext = createContext<GuccoraContextType | null>(null);
@@ -343,10 +323,6 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         parsed.team = (parsed.team || []).filter(
           (m) => !m.principal.startsWith("user-"),
         );
-        // Ensure userStatus is set (backward compat with old data)
-        if (!parsed.userStatus) {
-          parsed.userStatus = parsed.isActive ? "active" : "inactive";
-        }
         return parsed;
       }
     } catch {
@@ -373,29 +349,6 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
       // ignore
     }
   }, [userData]);
-
-  // Sync wallet + status back to "users" array whenever they change
-  useEffect(() => {
-    if (!currentUser?.id) return;
-    saveUserToUsersArray(currentUser.id, {
-      wallet: userData.walletBalance,
-      isActive: userData.isActive,
-      userStatus: userData.userStatus,
-      planStatus: userData.planStatus,
-      directIncome: userData.directIncome,
-      levelIncome: userData.levelIncome,
-      pairIncome: userData.pairIncome,
-    });
-  }, [
-    currentUser?.id,
-    userData.walletBalance,
-    userData.isActive,
-    userData.userStatus,
-    userData.planStatus,
-    userData.directIncome,
-    userData.levelIncome,
-    userData.pairIncome,
-  ]);
 
   // isProfileComplete: user is logged in
   const isProfileComplete = !!currentUser;
@@ -438,62 +391,21 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
       // Check registered users from canonical "users" key
       try {
         const stored = localStorage.getItem(USERS_KEY);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const users: any[] = stored ? JSON.parse(stored) : [];
+        const users: CurrentUser[] = stored ? JSON.parse(stored) : [];
         const found = users.find(
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (u: any) => u.phone === cleanPhone && u.password === cleanPass,
+          (u) => u.phone === cleanPhone && u.password === cleanPass,
         );
         if (found) {
-          const foundAsCurrentUser: CurrentUser = {
-            id: found.id,
-            name: found.name,
-            phone: found.phone,
-            password: found.password,
-            referralCode: found.referralCode,
-            role: found.role ?? "user",
-          };
-          setCurrentUser(foundAsCurrentUser);
-          localStorage.setItem(
-            CURRENT_USER_KEY,
-            JSON.stringify(foundAsCurrentUser),
-          );
-
-          // Resolve userStatus (may be absent in old records)
-          const savedUserStatus: UserStatus =
-            found.userStatus ?? (found.isActive ? "active" : "inactive");
-
-          // Restore wallet, userStatus, planStatus from saved "users" record
+          setCurrentUser(found);
+          localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(found));
+          // Update userData with user details
           setUserData((prev) => ({
             ...prev,
             name: found.name,
             phone: found.phone,
             referralCode: found.referralCode || prev.referralCode,
-            walletBalance:
-              typeof found.wallet === "number"
-                ? found.wallet
-                : prev.walletBalance,
-            isActive: savedUserStatus === "active",
-            userStatus: savedUserStatus,
-            planStatus:
-              savedUserStatus === "active" ? "active" : prev.planStatus,
-            directIncome:
-              typeof found.directIncome === "number"
-                ? found.directIncome
-                : prev.directIncome,
-            levelIncome:
-              typeof found.levelIncome === "number"
-                ? found.levelIncome
-                : prev.levelIncome,
-            pairIncome:
-              typeof found.pairIncome === "number"
-                ? found.pairIncome
-                : prev.pairIncome,
           }));
-          return {
-            success: true,
-            role: found.role ?? "user",
-          };
+          return { success: true, role: found.role ?? "user" };
         }
       } catch {
         // ignore
@@ -505,31 +417,18 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
   );
 
   const logout = useCallback(() => {
-    // Before clearing session, sync current wallet/status back to "users" array
-    // IMPORTANT: Do NOT change userStatus on logout — only admin can change it
-    if (currentUser?.id) {
-      saveUserToUsersArray(currentUser.id, {
-        wallet: userData.walletBalance,
-        isActive: userData.isActive,
-        userStatus: userData.userStatus, // preserve admin-set status
-        planStatus: userData.planStatus,
-        directIncome: userData.directIncome,
-        levelIncome: userData.levelIncome,
-        pairIncome: userData.pairIncome,
-      });
-    }
     setCurrentUser(null);
-    // Only clear session key — do NOT remove STORAGE_KEY or "users"
-    // so userStatus, wallet, and user accounts all persist after logout
+    // Only clear session keys — do NOT remove "users" so accounts persist
     try {
       localStorage.removeItem(CURRENT_USER_KEY);
+      localStorage.removeItem(STORAGE_KEY);
     } catch {
       // ignore
     }
-    // Reset in-memory userData to empty for next login
+    // Reset userData to empty so next login starts clean
     const fresh = createEmptyData();
     setUserData(fresh);
-  }, [currentUser, userData]);
+  }, []);
 
   const register = useCallback(
     async (
@@ -597,38 +496,12 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         rightCount: 0,
         referralCode: newReferralCode,
         isActive: false,
-        userStatus: "inactive", // Admin must activate — never auto-activate on registration
         createdAt: Date.now(),
       };
 
       // Save to localStorage "users" immediately (append, never overwrite)
       if (!existingUsers.find((u: FirestoreUser) => u.id === newId)) {
         existingUsers.push(newUserObj);
-
-        // Update sponsor's left/right child pointer
-        if (sponsorId) {
-          const sponsorIdx = existingUsers.findIndex(
-            (u) => u.id === sponsorId || u.referralCode === sponsorCode,
-          );
-          if (sponsorIdx !== -1) {
-            const sponsor = existingUsers[sponsorIdx];
-            const pos = position ?? "left";
-            if (pos === "left" && !sponsor.leftChild) {
-              existingUsers[sponsorIdx] = { ...sponsor, leftChild: newId };
-            } else if (pos === "right" && !sponsor.rightChild) {
-              existingUsers[sponsorIdx] = { ...sponsor, rightChild: newId };
-            }
-            // Also update parentId on new user
-            const newIdx = existingUsers.findIndex((u) => u.id === newId);
-            if (newIdx !== -1) {
-              existingUsers[newIdx] = {
-                ...existingUsers[newIdx],
-                parentId: existingUsers[sponsorIdx].id,
-              };
-            }
-          }
-        }
-
         try {
           localStorage.setItem(USERS_KEY, JSON.stringify(existingUsers));
         } catch {
@@ -662,21 +535,19 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         // ignore
       }
 
-      // Initialize userData — no demo data, status is inactive until admin approves
+      // Initialize userData — no demo data
       const userDataWithProfile: UserData = {
         ...createEmptyData(),
         name: cleanName,
         phone: cleanPhone,
         referralCode: newReferralCode,
         uplineCode: referralCode?.trim() || undefined,
-        isActive: false,
-        userStatus: "inactive",
         notifications: [
           {
             id: generateId(),
             title: "Welcome to GUCCORA!",
             message:
-              "Your account has been created. Purchase a plan to get activated by admin!",
+              "Your account has been created. Activate a plan to start earning!",
             timestamp: Date.now(),
             isRead: false,
           },
@@ -853,17 +724,27 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         timestamp: Date.now(),
       };
 
-      // NOTE: Do NOT auto-activate user here.
-      // User activation only happens when admin approves the order.
+      // Find the matching plan by plan type name
+      const matchedPlan = PLANS.find(
+        (p) => p.name.toLowerCase() === data.planType.toLowerCase(),
+      );
+
+      const now = Date.now();
+
       setUserData((prev) => ({
         ...prev,
         orders: [order, ...prev.orders],
+        // Activate the corresponding plan
+        planId: matchedPlan?.id ?? prev.planId,
+        planExpiry: now + 30 * 86400000,
+        planStatus: "active",
+        isActive: true,
         notifications: [
           {
             id: generateId(),
-            title: "Order Placed!",
-            message: `Your ${data.planType} plan order has been placed. Waiting for admin approval.`,
-            timestamp: Date.now(),
+            title: "Plan Activated!",
+            message: `Your ${data.planType} plan has been activated for 30 days.`,
+            timestamp: now,
             isRead: false,
           },
           ...prev.notifications,
@@ -882,58 +763,46 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Admin actions
-  const adminApprovePayment = useCallback(
-    (requestId: string) => {
-      // Also persist isActive + userStatus to "users" array so it survives logout
-      if (currentUser?.id) {
-        saveUserToUsersArray(currentUser.id, {
-          isActive: true,
-          userStatus: "active",
-          planStatus: "active",
-        });
-      }
-      setUserData((prev) => {
-        const req = prev.paymentRequests.find((r) => r.id === requestId);
-        if (!req) return prev;
-        const plan = PLANS.find((p) => p.id === req.planId);
-        const now = Date.now();
-        return {
-          ...prev,
-          planId: req.planId,
-          planExpiry: now + 30 * 86400000,
-          planStatus: "active",
-          isActive: true,
-          userStatus: "active" as UserStatus,
-          walletBalance: prev.walletBalance + (plan?.directIncome ?? 0),
-          directIncome: prev.directIncome + (plan?.directIncome ?? 0),
-          paymentRequests: prev.paymentRequests.map((r) =>
-            r.id === requestId ? { ...r, status: "approved" } : r,
-          ),
-          transactions: [
-            {
-              id: generateId(),
-              type: "income" as const,
-              amount: plan?.directIncome ?? 0,
-              description: `Plan ${req.planId} activated — direct income credited`,
-              timestamp: now,
-            },
-            ...prev.transactions,
-          ],
-          notifications: [
-            {
-              id: generateId(),
-              title: "Plan Activated!",
-              message: `Your ₹${req.planId} plan has been approved and activated.`,
-              timestamp: now,
-              isRead: false,
-            },
-            ...prev.notifications,
-          ],
-        };
-      });
-    },
-    [currentUser?.id],
-  );
+  const adminApprovePayment = useCallback((requestId: string) => {
+    setUserData((prev) => {
+      const req = prev.paymentRequests.find((r) => r.id === requestId);
+      if (!req) return prev;
+      const plan = PLANS.find((p) => p.id === req.planId);
+      const now = Date.now();
+      return {
+        ...prev,
+        planId: req.planId,
+        planExpiry: now + 30 * 86400000,
+        planStatus: "active",
+        isActive: true,
+        walletBalance: prev.walletBalance + (plan?.directIncome ?? 0),
+        directIncome: prev.directIncome + (plan?.directIncome ?? 0),
+        paymentRequests: prev.paymentRequests.map((r) =>
+          r.id === requestId ? { ...r, status: "approved" } : r,
+        ),
+        transactions: [
+          {
+            id: generateId(),
+            type: "income" as const,
+            amount: plan?.directIncome ?? 0,
+            description: `Plan ${req.planId} activated — direct income credited`,
+            timestamp: now,
+          },
+          ...prev.transactions,
+        ],
+        notifications: [
+          {
+            id: generateId(),
+            title: "Plan Activated!",
+            message: `Your ₹${req.planId} plan has been approved and activated.`,
+            timestamp: now,
+            isRead: false,
+          },
+          ...prev.notifications,
+        ],
+      };
+    });
+  }, []);
 
   const adminRejectPayment = useCallback((requestId: string) => {
     setUserData((prev) => ({
@@ -1105,53 +974,12 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  /**
-   * Admin sets a specific user status: "active" | "inactive" | "hold"
-   * Updates localStorage "users" array and Firestore (background).
-   * If the target is the currently logged-in user, also updates in-memory.
-   */
-  const adminSetUserStatus = useCallback(
-    (userId: string, status: UserStatus) => {
-      // 1. Update localStorage "users" array
-      try {
-        const raw = localStorage.getItem(USERS_KEY);
-        const users: FirestoreUser[] = raw ? JSON.parse(raw) : [];
-        const idx = users.findIndex((u) => u.id === userId);
-        if (idx !== -1) {
-          users[idx] = {
-            ...users[idx],
-            userStatus: status,
-            isActive: status === "active",
-          };
-          localStorage.setItem(USERS_KEY, JSON.stringify(users));
-        }
-      } catch {
-        // ignore
-      }
-
-      // 2. If updating current session user, also update in-memory
-      if (currentUser?.id === userId) {
-        setUserData((prev) => ({
-          ...prev,
-          userStatus: status,
-          isActive: status === "active",
-        }));
-      }
-
-      // 3. Try Firestore update in background
-      try {
-        updateDoc(doc(db, "users", userId), {
-          userStatus: status,
-          isActive: status === "active",
-        }).catch(() => {
-          // ignore — offline
-        });
-      } catch {
-        // ignore
-      }
-    },
-    [currentUser?.id],
-  );
+  const adminToggleUserActive = useCallback(() => {
+    setUserData((prev) => ({
+      ...prev,
+      isActive: !prev.isActive,
+    }));
+  }, []);
 
   return (
     <GuccoraContext.Provider
@@ -1182,7 +1010,7 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         adminAdjustUserWallet,
         getWalletMap,
         adminSendNotification,
-        adminSetUserStatus,
+        adminToggleUserActive,
       }}
     >
       {children}

@@ -9,6 +9,8 @@ import {
 } from "firebase/firestore";
 import { db } from "../firebase";
 
+export type UserStatus = "active" | "inactive" | "hold";
+
 export type FirestoreUser = {
   id: string;
   name: string;
@@ -27,6 +29,7 @@ export type FirestoreUser = {
   rightCount: number;
   referralCode: string;
   isActive: boolean;
+  userStatus: UserStatus;
   createdAt: number;
 };
 

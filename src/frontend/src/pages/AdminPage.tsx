@@ -38,6 +38,13 @@ type FirestoreUser = {
   sponsorId?: string;
   position?: string;
   isActive?: boolean;
+  userStatus?: "active" | "inactive" | "hold";
+  directIncome?: number;
+  levelIncome?: number;
+  pairIncome?: number;
+  leftCount?: number;
+  rightCount?: number;
+  referralCode?: string;
 };
 
 function formatDate(ts: number) {
@@ -54,6 +61,7 @@ function StatusBadge({ status }: { status: string }) {
     rejected: "bg-red-400/10 text-red-400 border-red-400/20",
     active: "bg-green-400/10 text-green-400 border-green-400/20",
     inactive: "bg-red-400/10 text-red-400 border-red-400/20",
+    hold: "bg-yellow-400/10 text-yellow-400 border-yellow-400/20",
     none: "bg-surface-3 text-[#808080] border-white/10",
   };
   return (
@@ -577,6 +585,138 @@ function OrdersTab() {
         // wallet update non-critical
       }
 
+      // ── MLM income distribution (localStorage fallback) ──────────────────
+      try {
+        type FullUser = {
+          id: string;
+          name?: string;
+          phone?: string;
+          wallet?: number;
+          sponsorId?: string | null;
+          position?: string | null;
+          isActive?: boolean;
+          userStatus?: "active" | "inactive" | "hold";
+          planStatus?: string;
+          directIncome?: number;
+          levelIncome?: number;
+          pairIncome?: number;
+          leftCount?: number;
+          rightCount?: number;
+          referralCode?: string;
+          leftChild?: string | null;
+          rightChild?: string | null;
+        };
+
+        const allUsers: FullUser[] = JSON.parse(
+          localStorage.getItem("users") || "[]",
+        );
+
+        const updateUserInStorage = (
+          userId: string,
+          updates: Partial<FullUser>,
+        ) => {
+          const idx = allUsers.findIndex(
+            (u) => u.id === userId || u.phone === userId,
+          );
+          if (idx !== -1) {
+            allUsers[idx] = { ...allUsers[idx], ...updates };
+          }
+        };
+
+        // 1. Activate the buyer
+        const buyer = allUsers.find(
+          (u) => u.id === order.userId || u.phone === order.phone,
+        );
+        if (buyer) {
+          updateUserInStorage(buyer.id, {
+            isActive: true,
+            userStatus: "active",
+            planStatus: "active",
+          });
+        }
+
+        // 2. MLM income amounts — derive from plan based on order amount
+        const matchedPlan = PLANS.find(
+          (p) =>
+            p.price === order.amount ||
+            String(p.price) === String(order.amount),
+        );
+        const directAmt = matchedPlan?.directIncome ?? 40;
+        const levelAmt = matchedPlan?.levelIncome ?? 5;
+        const pairAmt = matchedPlan?.pairIncome ?? 3;
+
+        // 3. Direct income to sponsor
+        if (buyer?.sponsorId) {
+          const sponsor = allUsers.find(
+            (u) =>
+              u.id === buyer.sponsorId || u.referralCode === buyer.sponsorId,
+          );
+          if (sponsor) {
+            updateUserInStorage(sponsor.id, {
+              wallet: (sponsor.wallet || 0) + directAmt,
+              directIncome: (sponsor.directIncome || 0) + directAmt,
+            });
+          }
+        }
+
+        // 4. Level income — walk up 10 levels from buyer's sponsor
+        let currentId: string | null | undefined = buyer?.sponsorId;
+        let level = 0;
+        while (currentId && level < 10) {
+          const upline = allUsers.find(
+            (u) => u.id === currentId || u.referralCode === currentId,
+          );
+          if (!upline) break;
+          updateUserInStorage(upline.id, {
+            wallet: (upline.wallet || 0) + levelAmt,
+            levelIncome: (upline.levelIncome || 0) + levelAmt,
+          });
+          currentId = upline.sponsorId ?? null;
+          level++;
+        }
+
+        // 5. Pair income — walk up 10 levels, credit ₹3 per matched pair
+        currentId = buyer?.sponsorId;
+        level = 0;
+        while (currentId && level < 10) {
+          const upline = allUsers.find(
+            (u) => u.id === currentId || u.referralCode === currentId,
+          );
+          if (!upline) break;
+          const leftCount = upline.leftCount || 0;
+          const rightCount = upline.rightCount || 0;
+          const newLeftCount =
+            buyer?.position === "left" ? leftCount + 1 : leftCount;
+          const newRightCount =
+            buyer?.position === "right" ? rightCount + 1 : rightCount;
+          const pairs = Math.min(newLeftCount, newRightCount);
+          const prevPairs = Math.min(leftCount, rightCount);
+          if (pairs > prevPairs) {
+            updateUserInStorage(upline.id, {
+              wallet: (upline.wallet || 0) + pairAmt,
+              pairIncome: (upline.pairIncome || 0) + pairAmt,
+              leftCount: newLeftCount,
+              rightCount: newRightCount,
+            });
+          } else {
+            updateUserInStorage(upline.id, {
+              leftCount: newLeftCount,
+              rightCount: newRightCount,
+            });
+          }
+          currentId = upline.sponsorId ?? null;
+          level++;
+        }
+
+        // Save all user updates at once
+        localStorage.setItem("users", JSON.stringify(allUsers));
+      } catch (incomeErr) {
+        console.warn(
+          "MLM income distribution error (non-critical):",
+          incomeErr,
+        );
+      }
+
       // Update local state immediately — no reload needed
       setOrders((prev) =>
         prev.map((o) =>
@@ -586,7 +726,9 @@ function OrdersTab() {
         ),
       );
 
-      toast.success("Order approved and status updated.");
+      toast.success(
+        "Order approved! Income distributed to sponsor and upline.",
+      );
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Approval failed. Try again.";
@@ -716,9 +858,11 @@ function OrdersTab() {
 
 // ── Firestore Users Section ───────────────────────────────────────────────────
 function FirestoreUsersSection() {
+  const { adminSetUserStatus } = useGuccora();
   const [firestoreUsers, setFirestoreUsers] = useState<FirestoreUser[]>([]);
   const [localUsers, setLocalUsers] = useState<FirestoreUser[]>([]);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [settingStatusId, setSettingStatusId] = useState<string | null>(null);
 
   // Load from localStorage immediately (sync, no Firestore needed)
   useEffect(() => {
@@ -741,6 +885,18 @@ function FirestoreUsersSection() {
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
+
+  // Also listen to localStorage changes within same tab (after status changes)
+  function reloadLocal() {
+    try {
+      const stored = JSON.parse(
+        localStorage.getItem("users") || "[]",
+      ) as FirestoreUser[];
+      setLocalUsers(stored);
+    } catch {
+      setLocalUsers([]);
+    }
+  }
 
   // Also try Firestore (secondary — works only when credentials are real)
   useEffect(() => {
@@ -767,6 +923,27 @@ function FirestoreUsersSection() {
     for (const u of firestoreUsers) merged.set(u.id, u);
     return Array.from(merged.values());
   }, [firestoreUsers, localUsers]);
+
+  async function handleSetStatus(
+    user: FirestoreUser,
+    status: "active" | "inactive" | "hold",
+  ) {
+    setSettingStatusId(user.id);
+    try {
+      adminSetUserStatus(user.id, status);
+      reloadLocal();
+      const labels: Record<string, string> = {
+        active: "Activated",
+        inactive: "Deactivated",
+        hold: "Put on Hold",
+      };
+      toast.success(`${user.name ?? user.phone ?? "User"} — ${labels[status]}`);
+    } catch {
+      toast.error("Failed to update status");
+    } finally {
+      setSettingStatusId(null);
+    }
+  }
 
   async function handleDeleteUser(user: FirestoreUser) {
     const confirmed = window.confirm(
@@ -796,7 +973,22 @@ function FirestoreUsersSection() {
     }
   }
 
-  if (allDisplayUsers.length === 0) return null;
+  if (allDisplayUsers.length === 0) {
+    return (
+      <div
+        className="rounded-2xl border border-gold/10 overflow-hidden mb-4"
+        style={{ background: "#141414" }}
+      >
+        <div className="px-4 py-3 border-b border-gold/10">
+          <h2 className="text-white font-semibold text-sm">Registered Users</h2>
+        </div>
+        <div className="text-center py-8 text-[#606060]">
+          <Users size={28} className="mx-auto mb-2 text-gold/20" />
+          <p className="text-sm">No users registered yet</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -812,50 +1004,100 @@ function FirestoreUsersSection() {
       </div>
 
       <div className="divide-y divide-white/5">
-        {allDisplayUsers.map((user, i) => (
-          <div
-            key={user.id}
-            className="flex items-center gap-3 px-4 py-3"
-            data-ocid={`admin.firestore_user.item.${i + 1}`}
-          >
-            {/* Avatar initial */}
-            <div className="w-8 h-8 rounded-full bg-gold/15 border border-gold/25 flex items-center justify-center flex-shrink-0">
-              <span className="text-gold text-xs font-bold">
-                {(user.name ?? user.phone ?? "?").charAt(0).toUpperCase()}
-              </span>
-            </div>
-
-            {/* Info */}
-            <div className="flex-1 min-w-0">
-              <p className="text-white text-sm font-medium truncate">
-                {user.name ?? "—"}
-              </p>
-              <div className="flex items-center gap-2 mt-0.5">
-                <p className="text-[#606060] text-xs">{user.phone ?? "—"}</p>
-                {user.wallet !== undefined && (
-                  <p className="text-gold text-xs font-semibold">
-                    ₹{user.wallet.toLocaleString("en-IN")}
+        {allDisplayUsers.map((user, i) => {
+          const status: "active" | "inactive" | "hold" =
+            user.userStatus ?? (user.isActive ? "active" : "inactive");
+          return (
+            <div
+              key={user.id}
+              className="px-4 py-3"
+              data-ocid={`admin.firestore_user.item.${i + 1}`}
+            >
+              {/* Top row: avatar + info + status badge */}
+              <div className="flex items-center gap-3 mb-2">
+                <div className="w-8 h-8 rounded-full bg-gold/15 border border-gold/25 flex items-center justify-center flex-shrink-0">
+                  <span className="text-gold text-xs font-bold">
+                    {(user.name ?? user.phone ?? "?").charAt(0).toUpperCase()}
+                  </span>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-white text-sm font-medium truncate">
+                    {user.name ?? "—"}
                   </p>
-                )}
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <p className="text-[#606060] text-xs">
+                      {user.phone ?? "—"}
+                    </p>
+                    {user.wallet !== undefined && (
+                      <p className="text-gold text-xs font-semibold">
+                        ₹{user.wallet.toLocaleString("en-IN")}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <StatusBadge status={status} />
+              </div>
+
+              {/* Bottom row: status action buttons + delete */}
+              <div className="flex items-center gap-1.5 ml-11">
+                <button
+                  type="button"
+                  onClick={() => handleSetStatus(user, "active")}
+                  disabled={settingStatusId === user.id || status === "active"}
+                  className={`flex-1 h-7 rounded-lg text-[10px] font-bold transition-colors disabled:opacity-40 ${
+                    status === "active"
+                      ? "bg-green-500/30 text-green-400 border border-green-500/40 cursor-default"
+                      : "bg-green-500/10 text-green-400 hover:bg-green-500/25 border border-green-500/20"
+                  }`}
+                  data-ocid={`admin.user.status_active.${i + 1}`}
+                >
+                  Active
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSetStatus(user, "inactive")}
+                  disabled={
+                    settingStatusId === user.id || status === "inactive"
+                  }
+                  className={`flex-1 h-7 rounded-lg text-[10px] font-bold transition-colors disabled:opacity-40 ${
+                    status === "inactive"
+                      ? "bg-red-500/30 text-red-400 border border-red-500/40 cursor-default"
+                      : "bg-red-500/10 text-red-400 hover:bg-red-500/25 border border-red-500/20"
+                  }`}
+                  data-ocid={`admin.user.status_inactive.${i + 1}`}
+                >
+                  Inactive
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSetStatus(user, "hold")}
+                  disabled={settingStatusId === user.id || status === "hold"}
+                  className={`flex-1 h-7 rounded-lg text-[10px] font-bold transition-colors disabled:opacity-40 ${
+                    status === "hold"
+                      ? "bg-yellow-400/30 text-yellow-400 border border-yellow-400/40 cursor-default"
+                      : "bg-yellow-400/10 text-yellow-400 hover:bg-yellow-400/25 border border-yellow-400/20"
+                  }`}
+                  data-ocid={`admin.user.status_hold.${i + 1}`}
+                >
+                  Hold
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDeleteUser(user)}
+                  disabled={deletingId === user.id}
+                  className="w-7 h-7 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 flex items-center justify-center transition-colors disabled:opacity-50 flex-shrink-0"
+                  data-ocid={`admin.firestore_user.delete_button.${i + 1}`}
+                >
+                  {deletingId === user.id ? (
+                    <span className="w-3 h-3 rounded-full border-2 border-red-400 border-t-transparent animate-spin" />
+                  ) : (
+                    <Trash2 size={12} />
+                  )}
+                </button>
               </div>
             </div>
-
-            {/* Delete button */}
-            <button
-              type="button"
-              onClick={() => handleDeleteUser(user)}
-              disabled={deletingId === user.id}
-              className="w-7 h-7 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 flex items-center justify-center transition-colors disabled:opacity-50"
-              data-ocid={`admin.firestore_user.delete_button.${i + 1}`}
-            >
-              {deletingId === user.id ? (
-                <span className="w-3 h-3 rounded-full border-2 border-red-400 border-t-transparent animate-spin" />
-              ) : (
-                <Trash2 size={12} />
-              )}
-            </button>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -875,7 +1117,6 @@ export function AdminPage() {
     adminAdjustUserWallet,
     getWalletMap,
     adminSendNotification,
-    adminToggleUserActive,
   } = useGuccora();
 
   const [adjustAmount, setAdjustAmount] = useState("");
@@ -1124,72 +1365,7 @@ export function AdminPage() {
 
         {/* Users */}
         <TabsContent value="users">
-          {/* ── Firestore Users (top section with delete) ── */}
           <FirestoreUsersSection />
-
-          {/* ── Existing legacy team management ── */}
-          <div
-            className="rounded-2xl border border-gold/10 overflow-hidden"
-            style={{ background: "#141414" }}
-          >
-            <div className="px-4 py-3 border-b border-gold/10">
-              <h2 className="text-white font-semibold text-sm">
-                User Management
-              </h2>
-            </div>
-            <div className="p-4 space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-white text-sm font-semibold">
-                    {userData.name || "Current User"}
-                  </p>
-                  <p className="text-[#606060] text-xs">{userData.phone}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <StatusBadge
-                    status={userData.isActive ? "active" : "inactive"}
-                  />
-                  <Button
-                    size="sm"
-                    onClick={() => {
-                      adminToggleUserActive();
-                      toast.success(
-                        `User ${
-                          userData.isActive ? "deactivated" : "activated"
-                        }`,
-                      );
-                    }}
-                    className={`h-7 px-3 text-xs rounded-lg ${
-                      userData.isActive
-                        ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
-                        : "bg-green-500/20 text-green-400 hover:bg-green-500/30"
-                    }`}
-                    data-ocid="admin.user.toggle"
-                  >
-                    {userData.isActive ? "Deactivate" : "Activate"}
-                  </Button>
-                </div>
-              </div>
-
-              {userData.team.map((member, i) => (
-                <div
-                  key={member.principal}
-                  className="flex items-center justify-between py-2 border-t border-white/5"
-                  data-ocid={`admin.team.item.${i + 1}`}
-                >
-                  <div>
-                    <p className="text-white text-sm">{member.name}</p>
-                    <p className="text-[#606060] text-xs">
-                      Level {member.level}
-                    </p>
-                  </div>
-                  <StatusBadge
-                    status={member.isActive ? "active" : "inactive"}
-                  />
-                </div>
-              ))}
-            </div>
-          </div>
         </TabsContent>
 
         {/* Payments + KYC + Withdrawals */}
