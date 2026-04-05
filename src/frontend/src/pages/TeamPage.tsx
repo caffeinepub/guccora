@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { collection, onSnapshot } from "firebase/firestore";
 import {
   CheckCircle,
   ChevronDown,
@@ -9,9 +10,10 @@ import {
   Users,
   XCircle,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useGuccora } from "../context/GuccoraContext";
+import { db, isFirebaseConfigured } from "../firebase";
 
 type StoredUser = {
   id: string;
@@ -207,14 +209,47 @@ export function TeamPage() {
   const { userData, currentUser } = useGuccora();
   const [viewMode, setViewMode] = useState<"list" | "tree">("list");
 
-  // Read users from localStorage synchronously — no loading state, no Firestore
-  const allUsers = useMemo((): StoredUser[] => {
+  // Base users from localStorage (always available, no async)
+  const [localUsers, _setLocalUsers] = useState<StoredUser[]>(() => {
     try {
       return JSON.parse(localStorage.getItem("users") || "[]") as StoredUser[];
     } catch {
       return [];
     }
+  });
+
+  // Firestore live users (overrides localStorage when configured)
+  const [firestoreUsers, setFirestoreUsers] = useState<StoredUser[]>([]);
+
+  // Subscribe to Firestore users collection for real-time updates
+  useEffect(() => {
+    if (!isFirebaseConfigured) return;
+
+    const unsub = onSnapshot(
+      collection(db, "users"),
+      (snapshot) => {
+        const users: StoredUser[] = [];
+        for (const docSnap of snapshot.docs) {
+          users.push({ id: docSnap.id, ...docSnap.data() } as StoredUser);
+        }
+        setFirestoreUsers(users);
+      },
+      () => {
+        // Firestore error — fall back to localStorage users
+        setFirestoreUsers([]);
+      },
+    );
+
+    return () => unsub();
   }, []);
+
+  // Merge: Firestore wins on conflict (by id), fallback to local
+  const allUsers = useMemo((): StoredUser[] => {
+    if (firestoreUsers.length === 0) return localUsers;
+    const firestoreIds = new Set(firestoreUsers.map((u) => u.id));
+    const localOnly = localUsers.filter((u) => !firestoreIds.has(u.id));
+    return [...firestoreUsers, ...localOnly];
+  }, [firestoreUsers, localUsers]);
 
   const currentUserId = currentUser?.id;
   const currentUserReferralCode = userData.referralCode;

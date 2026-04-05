@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { collection, onSnapshot } from "firebase/firestore";
+import { collection, deleteDoc, doc, onSnapshot } from "firebase/firestore";
 import {
   Bell,
   CheckCircle,
@@ -24,7 +24,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PLANS, useGuccora } from "../context/GuccoraContext";
-import { db } from "../firebase";
+import { db, isFirebaseConfigured } from "../firebase";
 import { useProducts } from "../hooks/useProducts";
 import type { Product } from "../hooks/useProducts";
 import { callApproveOrder } from "../utils/mlmFunctions";
@@ -944,7 +944,7 @@ function FirestoreUsersSection() {
     }
   }
 
-  function handleDeleteUser(user: FirestoreUser) {
+  async function handleDeleteUser(user: FirestoreUser) {
     const confirmed = window.confirm(
       `Delete ${user.name ?? user.phone ?? "this user"}? This cannot be undone.`,
     );
@@ -962,6 +962,15 @@ function FirestoreUsersSection() {
       // Update both state arrays instantly so UI reflects the change immediately
       setLocalUsers(updated);
       setFirestoreUsers((prev) => prev.filter((u) => u.id !== user.id));
+
+      // Also delete from Firestore if configured (non-blocking)
+      if (isFirebaseConfigured) {
+        try {
+          await deleteDoc(doc(db, "users", user.id));
+        } catch {
+          // ignore — localStorage delete already succeeded
+        }
+      }
 
       toast.success(
         `${user.name ?? user.phone ?? "User"} deleted successfully`,

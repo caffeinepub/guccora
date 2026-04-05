@@ -7,7 +7,7 @@ import {
   useEffect,
   useState,
 } from "react";
-import { db } from "../firebase";
+import { db, isFirebaseConfigured } from "../firebase";
 import type { FirestoreUser, UserStatus } from "../utils/mlmTree";
 
 export type Plan = {
@@ -636,13 +636,18 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      // Fire Firestore write in background — don't await, don't block UI
-      try {
-        setDoc(doc(db, "users", newId), newUserObj).catch(() => {
-          // Firestore offline — localStorage save above is sufficient
-        });
-      } catch {
-        // ignore
+      // Write to Firestore if configured (with 5-second timeout to avoid blocking)
+      if (isFirebaseConfigured) {
+        try {
+          await Promise.race([
+            setDoc(doc(db, "users", newId), newUserObj),
+            new Promise<void>((_, reject) =>
+              setTimeout(() => reject(new Error("timeout")), 5000),
+            ),
+          ]);
+        } catch {
+          // Firestore offline or timed out — localStorage save above is sufficient
+        }
       }
 
       // Set current user session immediately (synchronous)
@@ -1111,7 +1116,7 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
    * If the target is the currently logged-in user, also updates in-memory.
    */
   const adminSetUserStatus = useCallback(
-    (userId: string, status: UserStatus) => {
+    async (userId: string, status: UserStatus) => {
       // 1. Update localStorage "users" array
       try {
         const raw = localStorage.getItem(USERS_KEY);
@@ -1138,16 +1143,21 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         }));
       }
 
-      // 3. Try Firestore update in background
-      try {
-        updateDoc(doc(db, "users", userId), {
-          userStatus: status,
-          isActive: status === "active",
-        }).catch(() => {
-          // ignore — offline
-        });
-      } catch {
-        // ignore
+      // 3. Try Firestore update if configured (with 5-second timeout)
+      if (isFirebaseConfigured) {
+        try {
+          await Promise.race([
+            updateDoc(doc(db, "users", userId), {
+              userStatus: status,
+              isActive: status === "active",
+            }),
+            new Promise<void>((_, reject) =>
+              setTimeout(() => reject(new Error("timeout")), 5000),
+            ),
+          ]);
+        } catch {
+          // ignore — offline or timed out
+        }
       }
     },
     [currentUser?.id],

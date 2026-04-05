@@ -8,10 +8,12 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { addDoc, collection, serverTimestamp } from "firebase/firestore";
 import { CheckCircle, ExternalLink, Package } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useGuccora } from "../context/GuccoraContext";
+import { db, isFirebaseConfigured } from "../firebase";
 import type { Product } from "../hooks/useProducts";
 
 const PRODUCTS_KEY = "guccora_products";
@@ -164,6 +166,34 @@ export function ProductsPage() {
       localStorage.setItem("orders", JSON.stringify(globalOrders));
     } catch {
       // ignore
+    }
+
+    // Also write to Firestore orders collection if configured
+    if (isFirebaseConfigured) {
+      try {
+        const currentUserRaw2 = localStorage.getItem("guccora_currentUser");
+        const storedUser2 = currentUserRaw2
+          ? (JSON.parse(currentUserRaw2) as {
+              name?: string;
+              phone?: string;
+              id?: string;
+            })
+          : {};
+        const userId2 = currentUser?.id ?? storedUser2.id ?? "";
+        await addDoc(collection(db, "orders"), {
+          userId: userId2,
+          userName: storedUser2.name || "Unknown",
+          phone: storedUser2.phone || "Unknown",
+          productName: selectedProduct.name,
+          amount: selectedProduct.price,
+          planType: selectedProduct.planType,
+          status: "pending",
+          isAmountAdded: false,
+          createdAt: serverTimestamp(),
+        });
+      } catch {
+        // ignore — localStorage order already saved above
+      }
     }
 
     submitPaymentRequest(

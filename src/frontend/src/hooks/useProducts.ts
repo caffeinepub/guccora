@@ -1,4 +1,13 @@
-import { useCallback, useState } from "react";
+import {
+  collection,
+  deleteDoc,
+  doc,
+  onSnapshot,
+  setDoc,
+  updateDoc,
+} from "firebase/firestore";
+import { useCallback, useEffect, useState } from "react";
+import { db, isFirebaseConfigured } from "../firebase";
 
 export type Product = {
   id: string;
@@ -16,7 +25,7 @@ function generateId(): string {
   return Math.random().toString(36).substring(2, 12);
 }
 
-function loadProducts(): Product[] {
+function loadProductsFromStorage(): Product[] {
   try {
     const stored = localStorage.getItem(PRODUCTS_KEY);
     if (stored) return JSON.parse(stored) as Product[];
@@ -26,7 +35,7 @@ function loadProducts(): Product[] {
   return [];
 }
 
-function saveProducts(products: Product[]): void {
+function saveProductsToStorage(products: Product[]): void {
   try {
     localStorage.setItem(PRODUCTS_KEY, JSON.stringify(products));
   } catch {
@@ -35,7 +44,37 @@ function saveProducts(products: Product[]): void {
 }
 
 export function useProducts() {
-  const [products, setProducts] = useState<Product[]>(loadProducts);
+  const [products, setProducts] = useState<Product[]>(loadProductsFromStorage);
+
+  // Subscribe to Firestore products if configured
+  useEffect(() => {
+    if (!isFirebaseConfigured) return;
+
+    const unsub = onSnapshot(
+      collection(db, "products"),
+      (snapshot) => {
+        const firestoreProducts: Product[] = [];
+        for (const docSnap of snapshot.docs) {
+          firestoreProducts.push({
+            id: docSnap.id,
+            ...docSnap.data(),
+          } as Product);
+        }
+        // Sort by createdAt descending
+        firestoreProducts.sort(
+          (a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0),
+        );
+        setProducts(firestoreProducts);
+        saveProductsToStorage(firestoreProducts);
+      },
+      () => {
+        // Firestore error — fall back to localStorage
+        setProducts(loadProductsFromStorage());
+      },
+    );
+
+    return () => unsub();
+  }, []);
 
   const addProduct = useCallback((data: Omit<Product, "id" | "createdAt">) => {
     const newProduct: Product = {
@@ -43,20 +82,36 @@ export function useProducts() {
       id: generateId(),
       createdAt: Date.now(),
     };
+
+    // Optimistically update localStorage and state
     setProducts((prev) => {
       const next = [newProduct, ...prev];
-      saveProducts(next);
+      saveProductsToStorage(next);
       return next;
     });
+
+    // Write to Firestore if configured
+    if (isFirebaseConfigured) {
+      setDoc(doc(db, "products", newProduct.id), newProduct).catch(() => {
+        // ignore — localStorage already updated
+      });
+    }
   }, []);
 
   const updateProduct = useCallback(
     (id: string, data: Partial<Omit<Product, "id" | "createdAt">>) => {
       setProducts((prev) => {
         const next = prev.map((p) => (p.id === id ? { ...p, ...data } : p));
-        saveProducts(next);
+        saveProductsToStorage(next);
         return next;
       });
+
+      // Update in Firestore if configured
+      if (isFirebaseConfigured) {
+        updateDoc(doc(db, "products", id), data).catch(() => {
+          // ignore
+        });
+      }
     },
     [],
   );
@@ -64,9 +119,16 @@ export function useProducts() {
   const deleteProduct = useCallback((id: string) => {
     setProducts((prev) => {
       const next = prev.filter((p) => p.id !== id);
-      saveProducts(next);
+      saveProductsToStorage(next);
       return next;
     });
+
+    // Delete from Firestore if configured
+    if (isFirebaseConfigured) {
+      deleteDoc(doc(db, "products", id)).catch(() => {
+        // ignore
+      });
+    }
   }, []);
 
   return { products, addProduct, updateProduct, deleteProduct };
