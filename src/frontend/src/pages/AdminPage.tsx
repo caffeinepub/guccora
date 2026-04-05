@@ -953,21 +953,106 @@ function FirestoreUsersSection() {
 
     setDeletingId(user.id);
     try {
-      await deleteFirestoreUser(user.id);
-      // Also remove from localStorage
+      // ── Step 1: Reverse income from localStorage orders (works without Firestore) ──
+      try {
+        const allOrders: Array<{
+          id?: string;
+          userId?: string;
+          status?: string;
+          amount?: number;
+          isAmountAdded?: boolean;
+        }> = JSON.parse(localStorage.getItem("orders") || "[]");
+
+        const userOrders = allOrders.filter(
+          (o) =>
+            o.userId === user.id &&
+            o.status === "approved" &&
+            o.isAmountAdded === true,
+        );
+
+        if (userOrders.length > 0) {
+          // Reverse income from wallets in localStorage "users" array
+          const allUsers: FirestoreUser[] = JSON.parse(
+            localStorage.getItem("users") || "[]",
+          );
+
+          for (const order of userOrders) {
+            const orderAmount = order.amount ?? 0;
+            // Reverse direct income from sponsor (₹40)
+            const directIncome = 40;
+            // Find sponsor of this user
+            const thisUser = allUsers.find((u) => u.id === user.id);
+            const sponsorId = (thisUser as { sponsorId?: string })?.sponsorId;
+            if (sponsorId) {
+              const sponsorIdx = allUsers.findIndex((u) => u.id === sponsorId);
+              if (sponsorIdx !== -1) {
+                const sponsor = allUsers[sponsorIdx];
+                const newWallet = Math.max(
+                  0,
+                  (sponsor.wallet ?? 0) - directIncome,
+                );
+                allUsers[sponsorIdx] = { ...sponsor, wallet: newWallet };
+              }
+            }
+            // Reverse admin wallet
+            try {
+              const adminWallet = JSON.parse(
+                localStorage.getItem("guccora_admin_wallet") ||
+                  '{"balance":0,"history":[]}',
+              );
+              adminWallet.balance = Math.max(
+                0,
+                (adminWallet.balance ?? 0) - orderAmount,
+              );
+              localStorage.setItem(
+                "guccora_admin_wallet",
+                JSON.stringify(adminWallet),
+              );
+            } catch {
+              // ignore admin wallet errors
+            }
+          }
+          localStorage.setItem("users", JSON.stringify(allUsers));
+
+          // Mark user's orders as reversed in localStorage
+          const updatedOrders = allOrders.map((o) =>
+            o.userId === user.id && o.status === "approved"
+              ? { ...o, reversed: true, isAmountAdded: false }
+              : o,
+          );
+          localStorage.setItem("orders", JSON.stringify(updatedOrders));
+        }
+      } catch {
+        // localStorage reversal failed — continue with deletion anyway
+      }
+
+      // ── Step 2: Try Firestore deletion (no-op if credentials are placeholder) ──
+      try {
+        await deleteFirestoreUser(user.id);
+      } catch {
+        // Firestore not available — localStorage cleanup handles it
+      }
+
+      // ── Step 3: Remove user from localStorage "users" ──────────────────────
       try {
         const stored = JSON.parse(
           localStorage.getItem("users") || "[]",
         ) as FirestoreUser[];
         const updated = stored.filter((u) => u.id !== user.id);
         localStorage.setItem("users", JSON.stringify(updated));
+        // Update both state arrays so allDisplayUsers recalculates instantly
         setLocalUsers(updated);
+        setFirestoreUsers((prev) => prev.filter((u) => u.id !== user.id));
       } catch {
-        // ignore
+        // Still update state even if localStorage fails
+        setLocalUsers((prev) => prev.filter((u) => u.id !== user.id));
+        setFirestoreUsers((prev) => prev.filter((u) => u.id !== user.id));
       }
+
       toast.success("User deleted and income reversed");
-    } catch {
-      toast.error("Failed to delete user");
+    } catch (err) {
+      console.error("Delete user error:", err);
+      toast.error("Failed to delete user. Please try again.");
     } finally {
       setDeletingId(null);
     }
