@@ -8,8 +8,8 @@ import {
   query,
   updateDoc,
 } from "firebase/firestore";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { db, isFirebaseConfigured } from "../firebase";
+import { useCallback, useEffect, useState } from "react";
+import { db } from "../firebase";
 
 export type Product = {
   id: string;
@@ -21,44 +21,19 @@ export type Product = {
   createdAt: number;
 };
 
-const PRODUCTS_KEY = "guccora_products";
-
-function loadProductsFromStorage(): Product[] {
-  try {
-    const stored = localStorage.getItem(PRODUCTS_KEY);
-    if (stored) return JSON.parse(stored) as Product[];
-  } catch {
-    // ignore
-  }
-  return [];
-}
-
-function saveProductsToStorage(products: Product[]): void {
-  try {
-    localStorage.setItem(PRODUCTS_KEY, JSON.stringify(products));
-  } catch {
-    // ignore
-  }
-}
-
 export function useProducts() {
-  const [products, setProducts] = useState<Product[]>(loadProductsFromStorage);
-  // Track whether Firestore has delivered at least one snapshot
-  const firestoreLoadedRef = useRef(false);
+  // Start with empty array — Firestore is the only source of truth
+  const [products, setProducts] = useState<Product[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  // Subscribe to Firestore products collection in real time
   useEffect(() => {
-    if (!isFirebaseConfigured) return;
-
-    // Order by createdAt — using numeric timestamps (Date.now()) avoids
-    // the null-timestamp problem that serverTimestamp() causes on the first
-    // optimistic local snapshot, which would exclude new docs from the query.
+    // Always connect to Firestore — db is always initialized with real config
     const q = query(collection(db, "products"), orderBy("createdAt", "desc"));
 
     const unsub = onSnapshot(
       q,
       (snapshot) => {
-        // Map ALL docs — Firestore sends the FULL collection on every change
+        // Map ALL docs in the snapshot — Firestore sends the FULL collection every time
         const firestoreProducts: Product[] = snapshot.docs.map(
           (docSnap) =>
             ({
@@ -67,18 +42,25 @@ export function useProducts() {
             }) as Product,
         );
 
-        firestoreLoadedRef.current = true;
+        console.log(
+          "[useProducts] Firestore snapshot:",
+          firestoreProducts.length,
+          "products",
+          firestoreProducts.map((p) => ({
+            id: p.id,
+            name: p.name,
+            price: p.price,
+          })),
+        );
 
-        // Replace state with exactly what Firestore returns (full collection)
+        // Replace state completely — never merge, never append manually.
+        // Firestore's onSnapshot always delivers the full current collection.
         setProducts(firestoreProducts);
-        saveProductsToStorage(firestoreProducts);
+        setLoading(false);
       },
-      () => {
-        // Firestore error — keep localStorage data if Firestore never responded
-        if (!firestoreLoadedRef.current) {
-          const local = loadProductsFromStorage();
-          if (local.length > 0) setProducts(local);
-        }
+      (err) => {
+        console.error("[useProducts] Firestore onSnapshot error:", err);
+        setLoading(false);
       },
     );
 
@@ -87,87 +69,53 @@ export function useProducts() {
 
   const addProduct = useCallback(
     async (data: Omit<Product, "id" | "createdAt">) => {
-      // Use Date.now() instead of serverTimestamp() so that:
-      // 1. The value is immediately available (no null on optimistic write)
-      // 2. orderBy("createdAt") works correctly from the first snapshot
-      // 3. Each product gets a unique timestamp — no overwrites
+      // Date.now() instead of serverTimestamp() so the value is immediately
+      // available and orderBy("createdAt") works from the very first snapshot.
       const createdAt = Date.now();
 
-      if (isFirebaseConfigured) {
-        try {
-          // addDoc() always creates a NEW document with a unique auto-generated ID
-          // It NEVER overwrites an existing document
-          await addDoc(collection(db, "products"), {
-            ...data,
-            createdAt,
-          });
-          // onSnapshot listener above will automatically update state
-          // No manual setProducts() needed here
-        } catch (err) {
-          console.error("Firestore addProduct failed:", err);
-          // Fallback: add to localStorage only
-          const localProduct: Product = {
-            ...data,
-            id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-            createdAt,
-          };
-          setProducts((prev) => {
-            const next = [localProduct, ...prev];
-            saveProductsToStorage(next);
-            return next;
-          });
-        }
-      } else {
-        // No Firebase — use localStorage only
-        const localProduct: Product = {
-          ...data,
-          id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      try {
+        // addDoc() ALWAYS creates a brand-new document with a unique auto-generated ID.
+        // It NEVER overwrites an existing document — each call = one new product.
+        const docRef = await addDoc(collection(db, "products"), {
+          name: data.name,
+          description: data.description,
+          price: data.price,
+          imageDataUrl: data.imageDataUrl,
+          planType: data.planType,
           createdAt,
-        };
-        setProducts((prev) => {
-          const next = [localProduct, ...prev];
-          saveProductsToStorage(next);
-          return next;
         });
+        console.log("[useProducts] addDoc success, new ID:", docRef.id);
+        // onSnapshot above will fire automatically and update products state
+      } catch (err) {
+        console.error("[useProducts] addDoc failed:", err);
+        throw err;
       }
     },
     [],
   );
 
   const updateProduct = useCallback(
-    (id: string, data: Partial<Omit<Product, "id" | "createdAt">>) => {
-      // Update local state immediately
-      setProducts((prev) => {
-        const next = prev.map((p) => (p.id === id ? { ...p, ...data } : p));
-        saveProductsToStorage(next);
-        return next;
-      });
-
-      // Sync to Firestore for real documents (not local-only)
-      if (isFirebaseConfigured && !id.startsWith("local_")) {
-        updateDoc(doc(db, "products", id), data).catch(() => {
-          // ignore — local state already updated
-        });
+    async (id: string, data: Partial<Omit<Product, "id" | "createdAt">>) => {
+      try {
+        await updateDoc(doc(db, "products", id), data);
+        // onSnapshot will update state automatically
+      } catch (err) {
+        console.error("[useProducts] updateDoc failed:", err);
+        throw err;
       }
     },
     [],
   );
 
-  const deleteProduct = useCallback((id: string) => {
-    // Remove from local state immediately
-    setProducts((prev) => {
-      const next = prev.filter((p) => p.id !== id);
-      saveProductsToStorage(next);
-      return next;
-    });
-
-    // Delete from Firestore for real documents
-    if (isFirebaseConfigured && !id.startsWith("local_")) {
-      deleteDoc(doc(db, "products", id)).catch(() => {
-        // ignore
-      });
+  const deleteProduct = useCallback(async (id: string) => {
+    try {
+      await deleteDoc(doc(db, "products", id));
+      // onSnapshot will remove it from state automatically
+    } catch (err) {
+      console.error("[useProducts] deleteDoc failed:", err);
+      throw err;
     }
   }, []);
 
-  return { products, addProduct, updateProduct, deleteProduct };
+  return { products, loading, addProduct, updateProduct, deleteProduct };
 }

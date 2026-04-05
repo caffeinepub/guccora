@@ -31,6 +31,7 @@ export type FirestoreUser = {
   isActive: boolean;
   userStatus: UserStatus;
   referredBy?: string | null;
+  paidUser?: boolean;
   createdAt: number;
 };
 

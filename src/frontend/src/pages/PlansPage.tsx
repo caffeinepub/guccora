@@ -1,148 +1,266 @@
 import { Button } from "@/components/ui/button";
-import { CreditCard, Package } from "lucide-react";
-import { useProducts } from "../hooks/useProducts";
-import type { Product } from "../hooks/useProducts";
+import { CheckCircle, CreditCard, Loader2 } from "lucide-react";
+import { useState } from "react";
+import { toast } from "sonner";
+import { useGuccora } from "../context/GuccoraContext";
 
-// Per-price Razorpay payment links
-const RAZORPAY_LINKS: Record<number, string> = {
-  599: "https://rzp.io/rzp/LINK_599",
-  999: "https://rzp.io/rzp/AIDYAnv1",
-  1999: "https://rzp.io/rzp/LINK_1999",
-  2999: "https://rzp.io/rzp/LINK_2999",
+type PlanConfig = {
+  amount: 599 | 1999 | 2999;
+  label: string;
+  tag: string;
+  tagClass: string;
+  link: string;
+  commission: number;
+  features: string[];
 };
 
-// Fallback if price doesn't match any known plan
-const RAZORPAY_DEFAULT = "https://rzp.io/rzp/AIDYAnv1";
-
-function getRazorpayLink(price: number): string {
-  return RAZORPAY_LINKS[price] ?? RAZORPAY_DEFAULT;
-}
-
-const PLAN_TYPE_BADGE: Record<string, { label: string; className: string }> = {
-  starter: {
-    label: "Starter",
-    className: "bg-yellow-500/15 text-yellow-400 border border-yellow-500/20",
+const PLANS: PlanConfig[] = [
+  {
+    amount: 599,
+    label: "₹599 Plan",
+    tag: "Starter",
+    tagClass: "bg-yellow-500/15 text-yellow-400 border-yellow-500/25",
+    link: "https://rzp.io/rzp/4EG1XhZz",
+    commission: 100,
+    features: [
+      "Referral commission: ₹100",
+      "Instant activation",
+      "Access to all features",
+    ],
   },
-  silver: {
-    label: "Silver",
-    className: "bg-slate-400/15 text-slate-300 border border-slate-400/20",
+  {
+    amount: 1999,
+    label: "₹1999 Plan",
+    tag: "Premium",
+    tagClass: "bg-amber-500/15 text-amber-400 border-amber-500/25",
+    link: "https://rzp.io/rzp/rdiKuwK",
+    commission: 300,
+    features: [
+      "Referral commission: ₹300",
+      "Priority support",
+      "Higher earning potential",
+    ],
   },
-  gold: {
-    label: "Gold",
-    className: "bg-amber-500/15 text-amber-400 border border-amber-500/20",
+  {
+    amount: 2999,
+    label: "₹2999 Gold Plan",
+    tag: "Gold",
+    tagClass: "bg-gold/15 text-gold border-gold/25",
+    link: "https://rzp.io/rzp/eKYODKB",
+    commission: 500,
+    features: [
+      "Referral commission: ₹500",
+      "VIP support",
+      "Maximum earning potential",
+    ],
   },
-  platinum: {
-    label: "Platinum",
-    className: "bg-violet-500/15 text-violet-400 border border-violet-500/20",
-  },
-};
-
-function PlanTypeBadge({ planType }: { planType: string }) {
-  const badge = PLAN_TYPE_BADGE[planType.toLowerCase()] ?? {
-    label: planType,
-    className: "bg-gold/15 text-gold border border-gold/20",
-  };
-  return (
-    <span
-      className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide ${badge.className}`}
-    >
-      {badge.label}
-    </span>
-  );
-}
+];
 
 export function ProductsPage() {
-  // Use the hook directly — gets real-time Firestore updates
-  const { products } = useProducts();
+  const { userData, currentUser, markUserPaid } = useGuccora();
+  const [confirmingPlan, setConfirmingPlan] = useState<number | null>(null);
 
-  function handleBuyNow(product: Product) {
-    const link = getRazorpayLink(product.price);
-    window.open(link, "_blank", "noopener,noreferrer");
+  function handleJoin(plan: PlanConfig) {
+    window.open(plan.link, "_blank", "noopener,noreferrer");
   }
+
+  async function handleConfirmPayment(plan: PlanConfig) {
+    if (!currentUser) {
+      toast.error("Please login first");
+      return;
+    }
+    setConfirmingPlan(plan.amount);
+    try {
+      await markUserPaid(plan.amount);
+      toast.success(
+        `₹${plan.amount} Plan activated! You're now a paid member.`,
+      );
+    } catch {
+      toast.error("Failed to confirm. Please try again.");
+    } finally {
+      setConfirmingPlan(null);
+    }
+  }
+
+  const activePlan = userData.paidUser ? userData.selectedPlan : null;
 
   return (
     <div className="px-4 py-5 max-w-lg mx-auto animate-fade-in">
       <h1 className="text-white font-black font-display text-2xl mb-1">
-        Products
+        Choose Your Plan
       </h1>
       <p className="text-[#606060] text-sm mb-6">
-        Choose a product to activate your membership plan.
+        Select a plan to activate your membership and start earning referral
+        rewards.
       </p>
 
-      {products.length === 0 ? (
+      {/* Active plan banner */}
+      {userData.paidUser && activePlan && (
         <div
-          className="text-center py-16 rounded-2xl border border-gold/10"
-          style={{ background: "#141414" }}
-          data-ocid="products.list.empty_state"
+          className="flex items-center gap-3 rounded-2xl border border-green-500/25 p-4 mb-6"
+          style={{ background: "#0a1a0a" }}
+          data-ocid="plans.active_plan.banner"
         >
-          <Package size={48} className="mx-auto mb-3 text-gold/20" />
-          <p className="text-[#606060] text-base font-semibold">
-            No products available
-          </p>
-          <p className="text-[#404040] text-xs mt-1">Check back soon.</p>
+          <div className="w-9 h-9 rounded-full bg-green-500/15 flex items-center justify-center flex-shrink-0">
+            <CheckCircle size={18} className="text-green-400" />
+          </div>
+          <div>
+            <p className="text-green-400 font-bold text-sm">
+              ₹{activePlan} Plan Active
+            </p>
+            <p className="text-[#606060] text-xs">
+              Referral rewards enabled. Share your code to earn!
+            </p>
+          </div>
         </div>
-      ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          {products.map((product, idx) => (
+      )}
+
+      {/* Plan Cards */}
+      <div className="space-y-4">
+        {PLANS.map((plan) => {
+          const isActive = activePlan === plan.amount;
+          const isConfirming = confirmingPlan === plan.amount;
+          return (
             <div
-              key={product.id}
-              className="rounded-2xl border border-gold/15 overflow-hidden hover:border-gold/40 transition-all"
-              style={{ background: "#141414" }}
-              data-ocid={`products.product.item.${idx + 1}`}
+              key={plan.amount}
+              className={`rounded-2xl border p-5 relative overflow-hidden transition-all ${
+                isActive
+                  ? "border-green-500/30"
+                  : plan.amount === 2999
+                    ? "border-gold/40"
+                    : "border-gold/15 hover:border-gold/35"
+              }`}
+              style={{
+                background:
+                  plan.amount === 2999
+                    ? "linear-gradient(135deg, #141414 0%, #1a1200 100%)"
+                    : "#141414",
+              }}
+              data-ocid={`plans.plan_${plan.amount}.card`}
             >
-              {/* Product Image */}
-              <div
-                className="w-full h-40 flex items-center justify-center overflow-hidden border-b border-gold/10"
-                style={{ background: "#0A0A0A" }}
-              >
-                {product.imageDataUrl ? (
-                  <img
-                    src={product.imageDataUrl}
-                    alt={product.name}
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <Package size={40} className="text-gold/20" />
-                )}
+              {/* Gold glow for ₹2999 */}
+              {plan.amount === 2999 && (
+                <div
+                  className="absolute right-0 top-0 w-32 h-32 rounded-full opacity-10 pointer-events-none"
+                  style={{
+                    background:
+                      "radial-gradient(circle, #FFD700 0%, transparent 70%)",
+                    transform: "translate(30%, -30%)",
+                  }}
+                />
+              )}
+
+              <div className="flex items-start justify-between mb-3">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wide ${
+                        plan.tagClass
+                      }`}
+                    >
+                      {plan.tag}
+                    </span>
+                    {isActive && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/20">
+                        ✓ ACTIVE
+                      </span>
+                    )}
+                  </div>
+                  <h2 className="text-white font-black text-xl">
+                    {plan.label}
+                  </h2>
+                </div>
+                <span className="text-gold font-black text-2xl font-display">
+                  ₹{plan.amount.toLocaleString("en-IN")}
+                </span>
               </div>
 
-              {/* Card Content */}
-              <div className="p-4">
-                <div className="flex items-start justify-between gap-2 mb-2">
-                  <h3 className="text-white font-bold text-base leading-tight">
-                    {product.name}
-                  </h3>
-                  <PlanTypeBadge planType={product.planType} />
-                </div>
+              {/* Features */}
+              <ul className="space-y-1 mb-4">
+                {plan.features.map((f) => (
+                  <li
+                    key={f}
+                    className="flex items-center gap-2 text-xs text-[#909090]"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-gold/60 flex-shrink-0" />
+                    {f}
+                  </li>
+                ))}
+              </ul>
 
-                {product.description && (
-                  <p className="text-[#606060] text-xs mb-3 line-clamp-2">
-                    {product.description}
-                  </p>
-                )}
-
-                <div className="flex items-center justify-between mt-3">
-                  <span className="text-gold font-black text-xl font-display">
-                    ₹{product.price.toLocaleString("en-IN")}
+              {isActive ? (
+                <div className="flex items-center justify-center gap-2 h-11 rounded-xl border border-green-500/20 bg-green-500/10">
+                  <CheckCircle size={15} className="text-green-400" />
+                  <span className="text-green-400 font-bold text-sm">
+                    Plan Active
                   </span>
                 </div>
-
-                {/* Buy Now Button */}
-                <div className="mt-3">
+              ) : currentUser ? (
+                <div className="space-y-2">
                   <Button
-                    onClick={() => handleBuyNow(product)}
-                    className="w-full bg-gold hover:bg-gold-light text-black font-bold h-11 rounded-xl text-sm flex items-center justify-center gap-2"
-                    data-ocid={`products.buy_now.button.${idx + 1}`}
+                    onClick={() => handleJoin(plan)}
+                    className="w-full bg-gold hover:bg-gold-light text-black font-black h-11 rounded-xl text-sm flex items-center justify-center gap-2"
+                    data-ocid={`plans.plan_${plan.amount}.join_button`}
                   >
                     <CreditCard size={15} />
-                    Buy Now
+                    Join {plan.label} — Pay Now
                   </Button>
+                  <button
+                    type="button"
+                    onClick={() => handleConfirmPayment(plan)}
+                    disabled={isConfirming}
+                    className="w-full text-center text-[#808080] hover:text-gold text-xs py-2 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
+                    data-ocid={`plans.plan_${plan.amount}.confirm_button`}
+                  >
+                    {isConfirming ? (
+                      <>
+                        <Loader2 size={12} className="animate-spin" />
+                        Confirming...
+                      </>
+                    ) : (
+                      "I've already paid — confirm payment"
+                    )}
+                  </button>
                 </div>
-              </div>
+              ) : (
+                <Button
+                  onClick={() => handleJoin(plan)}
+                  className="w-full bg-gold hover:bg-gold-light text-black font-black h-11 rounded-xl text-sm flex items-center justify-center gap-2"
+                >
+                  <CreditCard size={15} />
+                  Join {plan.label}
+                </Button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Commission info footer */}
+      <div
+        className="mt-6 rounded-2xl border border-gold/10 p-4"
+        style={{ background: "#0A0A0A" }}
+        data-ocid="plans.commission_info.card"
+      >
+        <p className="text-[#606060] text-xs font-semibold mb-2 uppercase tracking-wide">
+          Referral Commission Structure
+        </p>
+        <div className="space-y-1.5">
+          {PLANS.map((plan) => (
+            <div
+              key={plan.amount}
+              className="flex items-center justify-between"
+            >
+              <span className="text-[#808080] text-xs">
+                ₹{plan.amount} Plan
+              </span>
+              <span className="text-gold font-bold text-xs">
+                ₹{plan.commission} per referral
+              </span>
             </div>
           ))}
         </div>
-      )}
+      </div>
     </div>
   );
 }

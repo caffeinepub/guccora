@@ -19,8 +19,12 @@ import {
 import {
   ArrowDownLeft,
   ArrowUpRight,
+  CheckCircle,
+  Clock,
+  Copy,
   Info,
   TrendingUp,
+  Users,
   Wallet,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -38,6 +42,15 @@ type MLMTransaction = {
   orderId: string;
   level: number | null;
   createdAt: { seconds: number; nanoseconds: number } | null;
+};
+
+type ReferredUser = {
+  id: string;
+  name: string;
+  phone: string;
+  paidUser?: boolean;
+  referralCode: string;
+  createdAt?: number;
 };
 
 function formatDate(ts: number) {
@@ -112,6 +125,8 @@ export function WalletPage() {
   const [ifsc, setIfsc] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [mlmTransactions, setMlmTransactions] = useState<MLMTransaction[]>([]);
+  const [referredUsers, setReferredUsers] = useState<ReferredUser[]>([]);
+  const [referralsLoading, setReferralsLoading] = useState(true);
 
   // Listen to Firestore MLM income transactions for this user
   useEffect(() => {
@@ -148,6 +163,62 @@ export function WalletPage() {
       if (unsubscribe) unsubscribe();
     };
   }, [currentUser?.id]);
+
+  // Listen to Firestore referred users (where referredBy == myReferralCode)
+  useEffect(() => {
+    const myCode = userData.referralCode;
+    if (!myCode) {
+      setReferralsLoading(false);
+      return;
+    }
+
+    setReferralsLoading(true);
+    let unsubscribe: (() => void) | undefined;
+    try {
+      const q = query(
+        collection(db, "users"),
+        where("referredBy", "==", myCode),
+      );
+      unsubscribe = onSnapshot(
+        q,
+        (snap) => {
+          const docs = snap.docs.map((d) => ({
+            id: d.id,
+            ...(d.data() as Omit<ReferredUser, "id">),
+          }));
+          setReferredUsers(docs);
+          setReferralsLoading(false);
+        },
+        () => {
+          // Firestore unavailable — try localStorage fallback
+          try {
+            const raw = localStorage.getItem("users");
+            const all = raw ? JSON.parse(raw) : [];
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const filtered = all.filter((u: any) => u.referredBy === myCode);
+            setReferredUsers(filtered);
+          } catch {
+            setReferredUsers([]);
+          }
+          setReferralsLoading(false);
+        },
+      );
+    } catch {
+      setReferralsLoading(false);
+    }
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [userData.referralCode]);
+
+  function handleCopyReferralLink() {
+    const link = `${window.location.origin}?ref=${userData.referralCode}`;
+    navigator.clipboard
+      .writeText(link)
+      .then(() => toast.success("Referral link copied!"))
+      .catch(() => toast.error("Failed to copy"));
+  }
 
   async function handleWithdraw() {
     const amt = Number.parseFloat(amount);
@@ -202,6 +273,29 @@ export function WalletPage() {
             userData.pairIncome
           ).toLocaleString("en-IN")}
         </div>
+        {/* Income breakdown */}
+        <div className="flex items-center gap-4 mb-4">
+          <div className="text-center">
+            <p className="text-gold font-bold text-sm">
+              ₹{userData.directIncome.toLocaleString("en-IN")}
+            </p>
+            <p className="text-[#505050] text-[10px]">Direct</p>
+          </div>
+          <div className="w-px h-6 bg-gold/15" />
+          <div className="text-center">
+            <p className="text-amber-400 font-bold text-sm">
+              ₹{userData.levelIncome.toLocaleString("en-IN")}
+            </p>
+            <p className="text-[#505050] text-[10px]">Level</p>
+          </div>
+          <div className="w-px h-6 bg-gold/15" />
+          <div className="text-center">
+            <p className="text-violet-400 font-bold text-sm">
+              ₹{userData.pairIncome.toLocaleString("en-IN")}
+            </p>
+            <p className="text-[#505050] text-[10px]">Pair</p>
+          </div>
+        </div>
         <Button
           onClick={() => setSheetOpen(true)}
           className="bg-gold hover:bg-gold-light text-black font-black px-6 h-9 rounded-xl text-sm"
@@ -209,6 +303,165 @@ export function WalletPage() {
         >
           Withdraw
         </Button>
+      </div>
+
+      {/* ====== MY PLAN CARD ====== */}
+      {userData.paidUser && (
+        <div
+          className="rounded-2xl border border-gold/15 p-4 mb-5 flex items-center gap-3"
+          style={{ background: "#141414" }}
+          data-ocid="wallet.my_plan.card"
+        >
+          <div className="w-10 h-10 rounded-full bg-gold/15 flex items-center justify-center flex-shrink-0">
+            <CheckCircle size={18} className="text-gold" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-[#808080] text-xs">My Plan</p>
+            {(userData as { selectedPlan?: 599 | 1999 | 2999 | null })
+              .selectedPlan ? (
+              <p className="text-white font-black text-base">
+                ₹
+                {(
+                  userData as { selectedPlan?: 599 | 1999 | 2999 | null }
+                ).selectedPlan?.toLocaleString("en-IN")}{" "}
+                Plan
+              </p>
+            ) : (
+              <p className="text-white font-bold text-base">Active Member</p>
+            )}
+          </div>
+          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/20">
+            ✓ ACTIVE
+          </span>
+        </div>
+      )}
+
+      {/* ====== REFERRAL INFO PANEL ====== */}
+      <div
+        className="rounded-2xl border border-gold/15 mb-5 overflow-hidden"
+        style={{ background: "#141414" }}
+        data-ocid="wallet.referral.panel"
+      >
+        {/* Section A — My Referral Code */}
+        <div className="px-4 pt-4 pb-3 border-b border-white/5">
+          <div className="flex items-center gap-2 mb-3">
+            <Users size={14} className="text-gold" />
+            <h2 className="text-white font-semibold text-sm">
+              My Referral Code
+            </h2>
+          </div>
+          <div className="flex items-center gap-2">
+            <div
+              className="flex-1 rounded-xl border border-gold/25 px-3 py-2"
+              style={{ background: "#0A0A0A" }}
+            >
+              <span
+                className="text-gold font-black text-base tracking-widest font-mono"
+                data-ocid="wallet.referral_code.input"
+              >
+                {userData.referralCode || "—"}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={handleCopyReferralLink}
+              className="flex items-center gap-1.5 text-xs text-[#808080] hover:text-gold transition-colors border border-gold/15 hover:border-gold/40 rounded-xl px-3 py-2 h-full"
+              data-ocid="wallet.referral.copy_button"
+            >
+              <Copy size={13} />
+              Copy Link
+            </button>
+          </div>
+          <p className="text-[#505050] text-[10px] mt-1.5">
+            Share your link — earn ₹100 when referred user pays ₹599
+          </p>
+        </div>
+
+        {/* Section C — Referred Users List */}
+        <div className="px-4 pt-3 pb-4">
+          <div className="flex items-center gap-2 mb-3">
+            <h3 className="text-white font-semibold text-sm">Referred Users</h3>
+            {referredUsers.length > 0 && (
+              <Badge
+                className="ml-auto bg-gold/10 text-gold border-gold/20 text-[9px] px-1.5"
+                data-ocid="wallet.referred_users.badge"
+              >
+                {referredUsers.length}
+              </Badge>
+            )}
+          </div>
+
+          {referralsLoading ? (
+            <div
+              className="flex items-center justify-center py-6"
+              data-ocid="wallet.referred_users.loading_state"
+            >
+              <div className="w-5 h-5 rounded-full border-2 border-gold/30 border-t-gold animate-spin" />
+            </div>
+          ) : referredUsers.length === 0 ? (
+            <div
+              className="text-center py-6"
+              data-ocid="wallet.referred_users.empty_state"
+            >
+              <Users size={24} className="mx-auto mb-2 text-gold/15" />
+              <p className="text-[#505050] text-xs">No referrals yet</p>
+              <p className="text-[#404040] text-[10px] mt-0.5">
+                Share your code to start earning ₹100–₹500 per referral
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2" data-ocid="wallet.referred_users.list">
+              {referredUsers.map((user, i) => {
+                const initial = (user.name || "?").charAt(0).toUpperCase();
+                const maskedPhone = user.phone
+                  ? user.phone.replace(/.(?=.{4})/g, "*")
+                  : "—";
+                return (
+                  <div
+                    key={user.id}
+                    className="flex items-center gap-3 rounded-xl px-3 py-2.5 border border-white/5"
+                    style={{ background: "#0A0A0A" }}
+                    data-ocid={`wallet.referred_user.item.${i + 1}`}
+                  >
+                    {/* Avatar */}
+                    <div className="w-8 h-8 rounded-full bg-gold/15 flex items-center justify-center flex-shrink-0">
+                      <span className="text-gold font-black text-sm">
+                        {initial}
+                      </span>
+                    </div>
+                    {/* Info */}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-white text-sm font-semibold truncate">
+                        {user.name || "Unknown"}
+                      </p>
+                      <p className="text-[#505050] text-[10px]">
+                        {maskedPhone}
+                      </p>
+                    </div>
+                    {/* Paid / Pending badge */}
+                    {user.paidUser ? (
+                      <div
+                        className="flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/20"
+                        data-ocid={`wallet.referred_user.paid_badge.${i + 1}`}
+                      >
+                        <CheckCircle size={10} />
+                        Paid
+                      </div>
+                    ) : (
+                      <div
+                        className="flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#303030] text-[#808080] border border-white/10"
+                        data-ocid={`wallet.referred_user.pending_badge.${i + 1}`}
+                      >
+                        <Clock size={10} />
+                        Pending
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* KYC Warning */}

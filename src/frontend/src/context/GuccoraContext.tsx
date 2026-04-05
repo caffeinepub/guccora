@@ -1,4 +1,14 @@
-import { doc, setDoc, updateDoc } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  increment,
+  query,
+  setDoc,
+  updateDoc,
+  where,
+} from "firebase/firestore";
 import {
   type ReactNode,
   createContext,
@@ -132,6 +142,8 @@ export type UserData = {
     bankName?: string;
   };
   savedAddress?: SavedAddress;
+  paidUser?: boolean;
+  selectedPlan?: 599 | 1999 | 2999 | null;
 };
 
 export type CurrentUser = {
@@ -243,6 +255,8 @@ function createEmptyData(): UserData {
     team: [],
     orders: [],
     notifications: [],
+    paidUser: false,
+    selectedPlan: null,
   };
 }
 
@@ -286,6 +300,7 @@ type GuccoraContextType = {
   }) => void;
   updateBankDetails: (details: UserData["bankDetails"]) => void;
   saveDeliveryAddress: (address: SavedAddress) => void;
+  markUserPaid: (planAmount: 599 | 1999 | 2999) => Promise<void>;
   // Admin actions
   adminApprovePayment: (requestId: string) => void;
   adminRejectPayment: (requestId: string) => void;
@@ -347,6 +362,10 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         if (!parsed.userStatus) {
           parsed.userStatus = parsed.isActive ? "active" : "inactive";
         }
+        // Ensure paidUser is set (backward compat)
+        if (parsed.paidUser === undefined) {
+          parsed.paidUser = false;
+        }
         return parsed;
       }
     } catch {
@@ -385,6 +404,7 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
       directIncome: userData.directIncome,
       levelIncome: userData.levelIncome,
       pairIncome: userData.pairIncome,
+      paidUser: userData.paidUser,
     });
   }, [
     currentUser?.id,
@@ -395,6 +415,7 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
     userData.directIncome,
     userData.levelIncome,
     userData.pairIncome,
+    userData.paidUser,
   ]);
 
   // isProfileComplete: user is logged in
@@ -463,7 +484,7 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
           const savedUserStatus: UserStatus =
             found.userStatus ?? (found.isActive ? "active" : "inactive");
 
-          // Restore wallet, userStatus, planStatus from saved "users" record
+          // Restore wallet, userStatus, planStatus, paidUser from saved "users" record
           setUserData((prev) => ({
             ...prev,
             name: found.name,
@@ -489,6 +510,7 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
               typeof found.pairIncome === "number"
                 ? found.pairIncome
                 : prev.pairIncome,
+            paidUser: found.paidUser === true,
           }));
           return {
             success: true,
@@ -516,6 +538,7 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         directIncome: userData.directIncome,
         levelIncome: userData.levelIncome,
         pairIncome: userData.pairIncome,
+        paidUser: userData.paidUser,
       });
     }
     setCurrentUser(null);
@@ -599,6 +622,7 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         referralCode: newReferralCode,
         isActive: false,
         userStatus: "inactive", // Admin must activate — never auto-activate on registration
+        paidUser: false,
         createdAt: Date.now(),
       };
 
@@ -677,6 +701,7 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         uplineCode: referralCode?.trim() || undefined,
         isActive: false,
         userStatus: "inactive",
+        paidUser: false,
         notifications: [
           {
             id: generateId(),
@@ -886,6 +911,129 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
   const saveDeliveryAddress = useCallback((address: SavedAddress) => {
     setUserData((prev) => ({ ...prev, savedAddress: address }));
   }, []);
+
+  /**
+   * markUserPaid: marks paidUser=true + selectedPlan in Firestore,
+   * then credits tiered commission to referrer. Idempotent — won't double-pay.
+   * Commission: ₹599→₹100, ₹1999→₹300, ₹2999→₹500
+   */
+  const REFERRAL_COMMISSION: Record<number, number> = {
+    599: 100,
+    1999: 300,
+    2999: 500,
+  };
+
+  const markUserPaid = useCallback(
+    async (planAmount: 599 | 1999 | 2999) => {
+      if (!currentUser?.id) return;
+      const commission = REFERRAL_COMMISSION[planAmount] ?? 100;
+
+      // Duplicate guard: check if already paid (from Firestore)
+      const userRef = doc(db, "users", currentUser.id);
+      let userSnap: Awaited<ReturnType<typeof getDoc>>;
+      try {
+        userSnap = await getDoc(userRef);
+      } catch {
+        // Firestore unreachable — update local state only
+        setUserData((prev) => ({
+          ...prev,
+          paidUser: true,
+          selectedPlan: planAmount,
+          isActive: true,
+          userStatus: "active" as UserStatus,
+        }));
+        if (currentUser.id) {
+          saveUserToUsersArray(currentUser.id, {
+            paidUser: true,
+            selectedPlan: planAmount,
+            isActive: true,
+            userStatus: "active",
+          });
+        }
+        return;
+      }
+
+      if (
+        userSnap.exists() &&
+        (userSnap.data() as Record<string, unknown>)?.paidUser === true
+      ) {
+        // Already paid — just sync local state
+        const existingPlan = (userSnap.data() as Record<string, unknown>)
+          ?.selectedPlan as number | undefined;
+        setUserData((prev) => ({
+          ...prev,
+          paidUser: true,
+          selectedPlan:
+            (existingPlan as 599 | 1999 | 2999 | null) ?? planAmount,
+        }));
+        return;
+      }
+
+      // Mark user as paid + save selected plan in Firestore
+      try {
+        await setDoc(
+          userRef,
+          { paidUser: true, selectedPlan: planAmount },
+          { merge: true },
+        );
+      } catch {
+        // ignore write failure — still update locally
+      }
+
+      // Update local state
+      setUserData((prev) => ({
+        ...prev,
+        paidUser: true,
+        selectedPlan: planAmount,
+        isActive: true,
+        userStatus: "active" as UserStatus,
+      }));
+
+      // Update localStorage users array
+      if (currentUser.id) {
+        saveUserToUsersArray(currentUser.id, {
+          paidUser: true,
+          selectedPlan: planAmount,
+          isActive: true,
+          userStatus: "active",
+        });
+      }
+
+      // Credit tiered commission to referrer if user was referred
+      const referredBy = userSnap.exists()
+        ? ((userSnap.data() as Record<string, unknown>)?.referredBy as
+            | string
+            | undefined)
+        : userData.uplineCode;
+
+      if (referredBy && referredBy !== currentUser.referralCode) {
+        try {
+          const usersRef = collection(db, "users");
+          const q = query(usersRef, where("referralCode", "==", referredBy));
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            const referrerDoc = snap.docs[0];
+            const referrerId = referrerDoc.id;
+            const referrerRef = doc(db, "users", referrerId);
+            // Atomic increment wallet by tiered commission
+            await updateDoc(referrerRef, {
+              wallet: increment(commission),
+            });
+            // If referrer is current user (edge case), update local state too
+            if (referrerId === currentUser.id) {
+              setUserData((prev) => ({
+                ...prev,
+                walletBalance: prev.walletBalance + commission,
+              }));
+            }
+          }
+        } catch {
+          // Referrer credit failed silently — don't block user
+        }
+      }
+    },
+    [currentUser, userData.uplineCode],
+  );
 
   // Admin actions
   const adminApprovePayment = useCallback(
@@ -1183,6 +1331,7 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         addOrder,
         updateBankDetails,
         saveDeliveryAddress,
+        markUserPaid,
         adminApprovePayment,
         adminRejectPayment,
         adminApproveKyc,

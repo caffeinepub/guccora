@@ -1,50 +1,36 @@
-# GUCCORA
+# GUCCORA — Razorpay 3-Plan System + Tiered Referral Rewards
 
 ## Current State
-- Admin Users tab has only Activate/Deactivate toggle (2 states)
-- `adminToggleUserActive()` flips `isActive` boolean — no "Hold" state
-- `logout()` calls `saveUserToUsersArray` with `isActive: userData.isActive` — persists status correctly but logic in `login()` sets `isActive` from `foundUser.isActive` — if `isActive` was false it stays false, so status does survive logout already; however the FirestoreUsersSection only shows Delete button, no status controls
-- `UserData.isActive` is boolean — no concept of "hold"
-- In `GuccoraContext.tsx` the `FirestoreUser` type in `mlmTree.ts` (used in users array) only has `isActive: boolean`
-- Admin order approval in `AdminPage.tsx` does run MLM income distribution in the localStorage fallback, BUT income rates are hardcoded to Starter values (₹40 direct, ₹5 level, ₹3 pair) regardless of product amount/plan
-- The localStorage MLM income code does iterate upline for level/pair income correctly
-- `login()` sets `isActive` from `foundUser.isActive`, so status persists; but there's no "hold" status displayed on user side
-- `FirestoreUsersSection` in AdminPage shows users but only with Delete button — no Active/Inactive/Hold buttons
+- PlansPage has a single ₹599 hero plan section plus a dynamic product grid. The hero plan uses `markUserPaid()` which always credits referrer ₹100.
+- WalletPage shows wallet balance, referral code, referred users list, MLM income, and withdrawal.
+- GuccoraContext `markUserPaid()` takes no arguments and hardcodes ₹100 referral reward.
+- UserData type has `paidUser: boolean` but no `selectedPlan` field.
 
 ## Requested Changes (Diff)
 
 ### Add
-- Three-state user status: `"active" | "inactive" | "hold"` (replaces boolean `isActive`)
-- Admin status buttons per user in FirestoreUsersSection: Active (green), Inactive (red), Hold (yellow)
-- `userStatus` field stored in the `users` localStorage array
-- Status badge showing "Hold" (yellow) alongside Active/Inactive in admin and user dashboards
-- `adminSetUserStatus(userId, status)` function in context replacing `adminToggleUserActive`
+- 3 fixed plan buttons on PlansPage: Join ₹599 Plan, Join ₹1999 Plan, Join ₹2999 Gold Plan
+- Each redirects to its Razorpay link on click
+- `selectedPlan` field (599 | 1999 | 2999 | null) on UserData, stored in Firestore
+- Tiered referral commission: ₹599→₹100, ₹1999→₹300, ₹2999→₹500
+- `markUserPaid(planAmount: number)` accepts plan amount, uses tiered commission
+- WalletPage: show "My Plan" section displaying active plan name
+- WalletPage: team members section showing referred users count and list
 
 ### Modify
-- `FirestoreUser` type in mlmTree.ts: add `userStatus?: "active" | "inactive" | "hold"`
-- `UserData` type: change `isActive: boolean` → keep for backward compat but add `userStatus: "active" | "inactive" | "hold"`
-- `createEmptyData()`: default `userStatus: "inactive"`
-- `login()`: restore `userStatus` from saved user record; set `isActive` from `userStatus === "active"`
-- `logout()`: save `userStatus` to users array before clearing session — do NOT change status
-- `saveUserToUsersArray()`: include `userStatus` in saved fields
-- `AdminPage.tsx` FirestoreUsersSection: add Active/Inactive/Hold buttons per user row
-- `AdminPage.tsx` legacy User Management: replace Toggle with 3-button status selector
-- `StatusBadge`: add `hold` variant (yellow)
-- MLM income distribution: use actual plan rates based on order amount instead of hardcoded Starter rates
-- `addOrder()` in context: do NOT set `isActive: true` immediately — only admin approval should activate
+- `markUserPaid()` signature → `markUserPaid(planAmount: number)` with tiered commission logic
+- PlansPage hero section replaced with 3-plan card grid
+- WalletPage referral note updated to show correct commission per plan
+- GuccoraContext type definition for `markUserPaid`
+- UserData type: add `selectedPlan?: 599 | 1999 | 2999 | null`
 
 ### Remove
-- `adminToggleUserActive` function (replaced by `adminSetUserStatus`)
-- Hardcoded Starter-plan income rates in AdminPage order approval fallback
+- Old single-plan ₹599 hero section on PlansPage (replaced by 3-plan layout)
 
 ## Implementation Plan
-1. Update `FirestoreUser` type in `mlmTree.ts` to add `userStatus`
-2. Update `UserData` type and `createEmptyData` in `GuccoraContext.tsx`
-3. Add `adminSetUserStatus` to context, remove `adminToggleUserActive`
-4. Fix `logout()` to save `userStatus` field
-5. Fix `login()` to restore `userStatus` field
-6. Fix `addOrder()` to NOT auto-activate user
-7. Update `AdminPage.tsx` FirestoreUsersSection with 3-button status controls
-8. Update AdminPage legacy user management section
-9. Fix MLM income rates in order approval to use plan-based rates
-10. Update StatusBadge to support hold state
+1. Update `UserData` type to add `selectedPlan` field
+2. Update `createEmptyData()` to include `selectedPlan: null`
+3. Update `markUserPaid` signature and logic in GuccoraContext — accept `planAmount`, compute commission from map, save `selectedPlan` + `paidUser` to Firestore, credit tiered commission to referrer
+4. Update `GuccoraContextType` interface for new signature
+5. Rewrite PlansPage to show 3 plan cards with correct links and `confirmPayment(planAmount)` flow
+6. Update WalletPage to show "My Plan" badge and clearer team section with per-plan commission note
