@@ -29,7 +29,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { useGuccora } from "../context/GuccoraContext";
+import { PLANS, useGuccora } from "../context/GuccoraContext";
 import type { Transaction } from "../context/GuccoraContext";
 import { db } from "../firebase";
 
@@ -317,12 +317,12 @@ export function WalletPage() {
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-[#808080] text-xs">My Plan</p>
-            {(userData as { selectedPlan?: 599 | 1999 | 2999 | null })
+            {(userData as { selectedPlan?: 599 | 999 | 1999 | 2999 | null })
               .selectedPlan ? (
               <p className="text-white font-black text-base">
                 ₹
                 {(
-                  userData as { selectedPlan?: 599 | 1999 | 2999 | null }
+                  userData as { selectedPlan?: 599 | 999 | 1999 | 2999 | null }
                 ).selectedPlan?.toLocaleString("en-IN")}{" "}
                 Plan
               </p>
@@ -335,6 +335,91 @@ export function WalletPage() {
           </span>
         </div>
       )}
+
+      {/* ====== INCOME PLAN BREAKDOWN ====== */}
+      {userData.paidUser &&
+        (() => {
+          const userPlan = PLANS.find(
+            (p) =>
+              p.price ===
+              (userData as { selectedPlan?: 599 | 999 | 1999 | 2999 | null })
+                .selectedPlan,
+          );
+          if (!userPlan) return null;
+          return (
+            <div
+              className="rounded-2xl border border-gold/15 p-4 mb-5"
+              style={{ background: "#141414" }}
+              data-ocid="wallet.income_breakdown.card"
+            >
+              <div className="flex items-center gap-2 mb-3">
+                <TrendingUp size={14} className="text-gold" />
+                <h2 className="text-white font-semibold text-sm">
+                  Income Breakdown — ₹{userPlan.price} Plan
+                </h2>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div
+                  className="rounded-xl border border-gold/20 p-3 text-center"
+                  style={{ background: "#0A0A0A" }}
+                >
+                  <p className="text-gold font-black text-lg">
+                    ₹{userPlan.directIncome}
+                  </p>
+                  <p className="text-[#606060] text-[10px] mt-0.5">
+                    Direct Income
+                  </p>
+                  <p className="text-[#404040] text-[10px]">per referral</p>
+                </div>
+                <div
+                  className="rounded-xl border border-amber-500/20 p-3 text-center"
+                  style={{ background: "#0A0A0A" }}
+                >
+                  <p className="text-amber-400 font-black text-lg">
+                    ₹{userPlan.levelIncome}
+                  </p>
+                  <p className="text-[#606060] text-[10px] mt-0.5">
+                    Level Income
+                  </p>
+                  <p className="text-[#404040] text-[10px]">× 10 levels</p>
+                </div>
+                <div
+                  className="rounded-xl border border-violet-500/20 p-3 text-center"
+                  style={{ background: "#0A0A0A" }}
+                >
+                  <p className="text-violet-400 font-black text-lg">
+                    ₹{userPlan.pairIncome}
+                  </p>
+                  <p className="text-[#606060] text-[10px] mt-0.5">
+                    Pair Income
+                  </p>
+                  <p className="text-[#404040] text-[10px]">per pair match</p>
+                </div>
+              </div>
+              <div
+                className="mt-3 rounded-xl border border-white/5 px-3 py-2"
+                style={{ background: "#0A0A0A" }}
+              >
+                <div className="flex justify-between items-center">
+                  <span className="text-[#606060] text-xs">
+                    Max Level Income (10 levels)
+                  </span>
+                  <span className="text-amber-400 font-bold text-xs">
+                    ₹{userPlan.levelIncome * 10}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center mt-1">
+                  <span className="text-[#606060] text-xs">
+                    Binary Pair Matching
+                  </span>
+                  <span className="text-[#808080] text-xs">
+                    Left + Right = 1 Pair
+                  </span>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
       {/* ====== REFERRAL INFO PANEL ====== */}
       <div
@@ -373,7 +458,8 @@ export function WalletPage() {
             </button>
           </div>
           <p className="text-[#505050] text-[10px] mt-1.5">
-            Share your link — earn ₹100 when referred user pays ₹599
+            Share your link — earn ₹40–₹210 direct income when your referral
+            joins
           </p>
         </div>
 

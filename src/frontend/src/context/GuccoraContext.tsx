@@ -143,7 +143,7 @@ export type UserData = {
   };
   savedAddress?: SavedAddress;
   paidUser?: boolean;
-  selectedPlan?: 599 | 1999 | 2999 | null;
+  selectedPlan?: 599 | 999 | 1999 | 2999 | null;
 };
 
 export type CurrentUser = {
@@ -162,7 +162,7 @@ export const PLANS: Plan[] = [
     price: 599,
     directIncome: 40,
     levelIncome: 5,
-    pairIncome: 3,
+    pairIncome: 30,
     levels: 10,
     durationDays: 30,
   },
@@ -170,9 +170,9 @@ export const PLANS: Plan[] = [
     id: "999",
     name: "Silver",
     price: 999,
-    directIncome: 80,
-    levelIncome: 10,
-    pairIncome: 6,
+    directIncome: 70,
+    levelIncome: 8,
+    pairIncome: 50,
     levels: 10,
     durationDays: 30,
   },
@@ -180,9 +180,9 @@ export const PLANS: Plan[] = [
     id: "1999",
     name: "Gold",
     price: 1999,
-    directIncome: 160,
-    levelIncome: 20,
-    pairIncome: 12,
+    directIncome: 140,
+    levelIncome: 16,
+    pairIncome: 100,
     levels: 10,
     durationDays: 30,
   },
@@ -190,9 +190,9 @@ export const PLANS: Plan[] = [
     id: "2999",
     name: "Platinum",
     price: 2999,
-    directIncome: 240,
-    levelIncome: 30,
-    pairIncome: 18,
+    directIncome: 210,
+    levelIncome: 24,
+    pairIncome: 150,
     levels: 10,
     durationDays: 30,
   },
@@ -300,7 +300,7 @@ type GuccoraContextType = {
   }) => void;
   updateBankDetails: (details: UserData["bankDetails"]) => void;
   saveDeliveryAddress: (address: SavedAddress) => void;
-  markUserPaid: (planAmount: 599 | 1999 | 2999) => Promise<void>;
+  markUserPaid: (planAmount: 599 | 999 | 1999 | 2999) => Promise<void>;
   // Admin actions
   adminApprovePayment: (requestId: string) => void;
   adminRejectPayment: (requestId: string) => void;
@@ -918,13 +918,14 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
    * Commission: ₹599→₹100, ₹1999→₹300, ₹2999→₹500
    */
   const REFERRAL_COMMISSION: Record<number, number> = {
-    599: 100,
-    1999: 300,
-    2999: 500,
+    599: 40,
+    999: 70,
+    1999: 140,
+    2999: 210,
   };
 
   const markUserPaid = useCallback(
-    async (planAmount: 599 | 1999 | 2999) => {
+    async (planAmount: 599 | 999 | 1999 | 2999) => {
       if (!currentUser?.id) return;
       const commission = REFERRAL_COMMISSION[planAmount] ?? 100;
 
@@ -964,7 +965,7 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
           ...prev,
           paidUser: true,
           selectedPlan:
-            (existingPlan as 599 | 1999 | 2999 | null) ?? planAmount,
+            (existingPlan as 599 | 999 | 1999 | 2999 | null) ?? planAmount,
         }));
         return;
       }

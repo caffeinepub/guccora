@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { useGuccora } from "../context/GuccoraContext";
 
 type PlanConfig = {
-  amount: 599 | 1999 | 2999;
+  amount: 599 | 999 | 1999 | 2999;
   label: string;
   tag: string;
   tagClass: string;
@@ -21,37 +21,50 @@ const PLANS: PlanConfig[] = [
     tag: "Starter",
     tagClass: "bg-yellow-500/15 text-yellow-400 border-yellow-500/25",
     link: "https://rzp.io/rzp/4EG1XhZz",
-    commission: 100,
+    commission: 40,
     features: [
-      "Referral commission: ₹100",
-      "Instant activation",
-      "Access to all features",
+      "Direct Income: ₹40 per referral",
+      "Level Income: ₹5 × 10 levels = ₹50",
+      "Pair Income: ₹30 per pair",
+    ],
+  },
+  {
+    amount: 999,
+    label: "₹999 Plan",
+    tag: "Silver",
+    tagClass: "bg-slate-400/15 text-slate-300 border-slate-400/25",
+    link: "https://rzp.io/rzp/AIDYAnv1",
+    commission: 70,
+    features: [
+      "Direct Income: ₹70 per referral",
+      "Level Income: ₹8 × 10 levels = ₹80",
+      "Pair Income: ₹50 per pair",
     ],
   },
   {
     amount: 1999,
     label: "₹1999 Plan",
-    tag: "Premium",
+    tag: "Gold",
     tagClass: "bg-amber-500/15 text-amber-400 border-amber-500/25",
     link: "https://rzp.io/rzp/rdiKuwK",
-    commission: 300,
+    commission: 140,
     features: [
-      "Referral commission: ₹300",
-      "Priority support",
-      "Higher earning potential",
+      "Direct Income: ₹140 per referral",
+      "Level Income: ₹16 × 10 levels = ₹160",
+      "Pair Income: ₹100 per pair",
     ],
   },
   {
     amount: 2999,
-    label: "₹2999 Gold Plan",
-    tag: "Gold",
+    label: "₹2999 Plan",
+    tag: "Platinum",
     tagClass: "bg-gold/15 text-gold border-gold/25",
     link: "https://rzp.io/rzp/eKYODKB",
-    commission: 500,
+    commission: 210,
     features: [
-      "Referral commission: ₹500",
-      "VIP support",
-      "Maximum earning potential",
+      "Direct Income: ₹210 per referral",
+      "Level Income: ₹24 × 10 levels = ₹240",
+      "Pair Income: ₹150 per pair",
     ],
   },
 ];
