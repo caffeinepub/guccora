@@ -1,23 +1,21 @@
 import { Button } from "@/components/ui/button";
-import { CheckCircle, CreditCard, Loader2 } from "lucide-react";
+import { CheckCircle, CreditCard, Loader2, Smartphone } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useGuccora } from "../context/GuccoraContext";
 import { useProducts } from "../hooks/useProducts";
 import type { Product } from "../hooks/useProducts";
-import { useRazorpay } from "../hooks/useRazorpay";
 
 const DEFAULT_IMAGE =
   "https://images.unsplash.com/photo-1607082348824-0a96f2a4b9da?w=600&q=80";
 
-const RAZORPAY_LINKS: Record<number, string> = {
-  599: "https://rzp.io/rzp/4EG1XhZz",
-  999: "https://rzp.io/rzp/AIDYAnv1",
-  1999: "https://rzp.io/rzp/rdiKuwK",
-  2999: "https://rzp.io/rzp/eKYODKB",
-};
+const UPI_ID = "6305462887-3@ybl";
+const UPI_NAME = "GUCCORA";
 
-const FALLBACK_LINK = "https://rzp.io/rzp/AIDYAnv1";
+function payUPI(amount: number) {
+  const url = `upi://pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&am=${amount}&cu=INR&tn=${encodeURIComponent("GUCCORA Plan")}`;
+  window.location.href = url;
+}
 
 type PlanIncome = {
   direct: number;
@@ -77,17 +75,14 @@ function getPlanIncome(product: Product): PlanIncome {
   if (INCOME_BY_PRICE[product.price]) {
     return INCOME_BY_PRICE[product.price];
   }
-  // default fallback
   return INCOME_BY_PLAN_TYPE.starter;
 }
 
 export function ProductsPage() {
   const { userData, currentUser, markUserPaid } = useGuccora();
   const { products: firestoreProducts, loading } = useProducts();
-  const { openRazorpay } = useRazorpay();
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
 
-  // Use Firestore products; fall back to localStorage if Firestore returns empty
   const products: Product[] = (() => {
     if (firestoreProducts.length > 0) return firestoreProducts;
     if (!loading) {
@@ -104,31 +99,6 @@ export function ProductsPage() {
     return firestoreProducts;
   })();
 
-  function handleJoin(product: Product) {
-    if (!currentUser) {
-      // Not logged in — fall back to direct payment link
-      const link = RAZORPAY_LINKS[product.price] ?? FALLBACK_LINK;
-      window.open(link, "_blank", "noopener,noreferrer");
-      return;
-    }
-    openRazorpay({
-      amount: product.price,
-      productName: product.name,
-      planType: product.planType ?? String(product.price),
-      productId: product.id,
-      userId: currentUser.id ?? "",
-      userName: currentUser.name,
-      phone: currentUser.phone,
-      onSuccess: async (planAmount) => {
-        try {
-          await markUserPaid(planAmount as 599 | 999 | 1999 | 2999);
-        } catch {
-          // ignore — toast already shown
-        }
-      },
-    });
-  }
-
   async function handleConfirmPayment(product: Product) {
     if (!currentUser) {
       toast.error("Please login first");
@@ -137,9 +107,7 @@ export function ProductsPage() {
     setConfirmingId(product.id);
     try {
       await markUserPaid(product.price as 599 | 999 | 1999 | 2999);
-      toast.success(
-        `₹${product.price} Plan activated! You're now a paid member.`,
-      );
+      toast.success(`Payment Successful — ₹${product.price} Plan Activated!`);
     } catch {
       toast.error("Failed to confirm. Please try again.");
     } finally {
@@ -155,8 +123,8 @@ export function ProductsPage() {
         Choose Your Plan
       </h1>
       <p className="text-[#606060] text-sm mb-6">
-        Select a plan to activate your membership and start earning referral
-        rewards.
+        Select a plan and pay via UPI (GPay, PhonePe, Paytm). After payment, tap
+        "Confirm Payment" to activate your plan.
       </p>
 
       {/* Active plan banner */}
@@ -179,6 +147,28 @@ export function ProductsPage() {
           </div>
         </div>
       )}
+
+      {/* UPI info banner */}
+      <div
+        className="flex items-start gap-3 rounded-2xl border border-gold/15 p-4 mb-6"
+        style={{ background: "#0e0c00" }}
+        data-ocid="plans.upi_info.banner"
+      >
+        <div className="w-9 h-9 rounded-full bg-gold/10 flex items-center justify-center flex-shrink-0 mt-0.5">
+          <Smartphone size={16} className="text-gold" />
+        </div>
+        <div>
+          <p className="text-gold font-bold text-sm mb-0.5">UPI Payment</p>
+          <p className="text-[#808080] text-xs leading-relaxed">
+            UPI ID:{" "}
+            <span className="text-white font-mono font-semibold">{UPI_ID}</span>
+          </p>
+          <p className="text-[#606060] text-xs mt-1">
+            Tap "Pay via UPI" to open GPay / PhonePe. After completing payment,
+            tap "I have paid — Confirm Payment".
+          </p>
+        </div>
+      </div>
 
       {/* Loading state */}
       {loading && (
@@ -254,7 +244,6 @@ export function ProductsPage() {
                       (e.target as HTMLImageElement).src = DEFAULT_IMAGE;
                     }}
                   />
-                  {/* Gradient overlay */}
                   <div
                     style={{
                       position: "absolute",
@@ -266,7 +255,6 @@ export function ProductsPage() {
                         "linear-gradient(to bottom, transparent, #141414)",
                     }}
                   />
-                  {/* Tag badge */}
                   <span
                     className={`absolute top-3 left-3 text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wide backdrop-blur-sm ${
                       income.tagClass
@@ -284,7 +272,6 @@ export function ProductsPage() {
 
                 {/* Card Body */}
                 <div className="p-5">
-                  {/* Plan name + price */}
                   <div className="flex items-center justify-between mb-3">
                     <h2 className="text-white font-black text-xl">
                       {product.name}
@@ -340,7 +327,6 @@ export function ProductsPage() {
                     </div>
                   </div>
 
-                  {/* Level income total note */}
                   <p className="text-[#505050] text-xs mb-4">
                     Level total: ₹{income.levelPer} × 10 = ₹
                     {income.levelPer * 10}
@@ -354,21 +340,24 @@ export function ProductsPage() {
                         Plan Active
                       </span>
                     </div>
-                  ) : currentUser ? (
+                  ) : (
                     <div className="space-y-2">
+                      {/* UPI Pay button */}
                       <Button
-                        onClick={() => handleJoin(product)}
+                        onClick={() => payUPI(product.price)}
                         className="w-full bg-gold hover:bg-gold-light text-black font-black h-11 rounded-xl text-sm flex items-center justify-center gap-2"
-                        data-ocid={`plans.plan.join_button.${i + 1}`}
+                        data-ocid={`plans.plan.pay_button.${i + 1}`}
                       >
-                        <CreditCard size={15} />
-                        Join ₹{product.price} Plan — Pay Now
+                        <Smartphone size={15} />
+                        Pay ₹{product.price} via UPI
                       </Button>
+
+                      {/* Confirm Payment button */}
                       <button
                         type="button"
                         onClick={() => handleConfirmPayment(product)}
-                        disabled={isConfirming}
-                        className="w-full text-center text-[#808080] hover:text-gold text-xs py-2 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
+                        disabled={isConfirming || !currentUser}
+                        className="w-full text-center text-[#808080] hover:text-gold text-xs py-2.5 px-3 rounded-xl border border-[#282828] hover:border-gold/30 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
                         data-ocid={`plans.plan.confirm_button.${i + 1}`}
                       >
                         {isConfirming ? (
@@ -377,18 +366,16 @@ export function ProductsPage() {
                             Confirming...
                           </>
                         ) : (
-                          "I've already paid — confirm payment"
+                          "I have paid — Confirm Payment"
                         )}
                       </button>
+
+                      {!currentUser && (
+                        <p className="text-[#505050] text-[11px] text-center">
+                          Login required to confirm payment
+                        </p>
+                      )}
                     </div>
-                  ) : (
-                    <Button
-                      onClick={() => handleJoin(product)}
-                      className="w-full bg-gold hover:bg-gold-light text-black font-black h-11 rounded-xl text-sm flex items-center justify-center gap-2"
-                    >
-                      <CreditCard size={15} />
-                      Join ₹{product.price} Plan
-                    </Button>
                   )}
                 </div>
               </div>
@@ -431,5 +418,4 @@ export function ProductsPage() {
   );
 }
 
-// Keep backward-compat export
 export { ProductsPage as PlansPage };
