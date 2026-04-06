@@ -9,7 +9,9 @@ import {
   deleteDoc,
   doc,
   onSnapshot,
+  query,
   setDoc,
+  where,
 } from "firebase/firestore";
 import {
   Bell,
@@ -33,6 +35,10 @@ import { PLANS, useGuccora } from "../context/GuccoraContext";
 import { db, isFirebaseConfigured } from "../firebase";
 import { useProducts } from "../hooks/useProducts";
 import type { Product } from "../hooks/useProducts";
+import {
+  approveFirestorePayment,
+  rejectFirestorePayment,
+} from "../utils/firestorePayments";
 import {
   applyFirestoreMLMApproval,
   applyFullMLMApproval,
@@ -496,6 +502,49 @@ function OrdersTab() {
   const [orders, setOrders] = useState<GlobalOrder[]>([]);
   const [filter, setFilter] = useState<"pending" | "all">("pending");
   const [approvingId, setApprovingId] = useState<string | null>(null);
+  // Approved payments from the "payments" Firestore collection
+  const [approvedPayments, setApprovedPayments] = useState<any[]>([]);
+
+  // ── Listen to approved payments from "payments" collection (real-time) ──
+  useEffect(() => {
+    const q = query(
+      collection(db, "payments"),
+      where("status", "==", "approved"),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        docs.sort((a: any, b: any) => {
+          const aTime = a.createdAt?.seconds ?? 0;
+          const bTime = b.createdAt?.seconds ?? 0;
+          return bTime - aTime;
+        });
+        setApprovedPayments(docs);
+      },
+      () => {
+        // Firestore unavailable — check localStorage orders
+        try {
+          const raw = JSON.parse(localStorage.getItem("orders") || "[]");
+          setApprovedPayments(
+            raw.map((o: any) => ({
+              id: o.id,
+              name: o.name ?? o.userName ?? "User",
+              phone: o.phone ?? o.userPhone ?? "",
+              planAmount: o.planAmount ?? o.amount ?? 0,
+              UTR: o.UTR ?? o.utr ?? "",
+              screenshot: o.screenshot ?? "",
+              status: "approved",
+              createdAt: null,
+            })),
+          );
+        } catch {
+          setApprovedPayments([]);
+        }
+      },
+    );
+    return () => unsub();
+  }, []);
 
   // ── Load orders from Firestore in real-time ────────────────────────────
   useEffect(() => {
@@ -565,10 +614,38 @@ function OrdersTab() {
     };
   }, []);
 
+  // For "All Orders" view: merge Firestore orders + approved payments from "payments" collection
+  const allOrdersCombined: GlobalOrder[] = (() => {
+    // Convert approvedPayments to GlobalOrder shape
+    const fromPayments: GlobalOrder[] = approvedPayments.map((p: any) => ({
+      id: p.id,
+      userId: p.userId ?? "",
+      userName: p.name ?? p.userName ?? "User",
+      phone: p.phone ?? p.userPhone ?? "",
+      productName: `₹${p.planAmount ?? p.plan ?? 0} Plan`,
+      amount: Number(p.planAmount ?? p.plan ?? 0),
+      status: "approved" as const,
+      isAmountAdded: true,
+      date: p.createdAt?.seconds
+        ? new Date(p.createdAt.seconds * 1000).toLocaleDateString("en-IN", {
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+          })
+        : "",
+      createdAt: p.createdAt ?? null,
+    }));
+
+    // Merge: prefer orders from "orders" collection, add approvedPayments that aren't already there
+    const orderIds = new Set(orders.map((o) => o.id));
+    const uniqueFromPayments = fromPayments.filter((p) => !orderIds.has(p.id));
+    return [...orders, ...uniqueFromPayments];
+  })();
+
   const displayed =
     filter === "pending"
-      ? orders.filter((o) => o.status === "pending")
-      : orders;
+      ? allOrdersCombined.filter((o) => o.status === "pending")
+      : allOrdersCombined;
 
   async function handleApprove(orderId: string) {
     if (!orderId) {
@@ -702,7 +779,7 @@ function OrdersTab() {
           }`}
           data-ocid="admin.orders.filter_all"
         >
-          All Orders ({orders.length})
+          All Orders ({allOrdersCombined.length})
         </button>
       </div>
 
@@ -1073,148 +1150,206 @@ export function AdminPage() {
   const [rejectReason, setRejectReason] = useState("");
   const [allPaymentRequests, setAllPaymentRequests] = useState<any[]>([]);
 
-  // Load payments from localStorage["payments"] key
-  function loadLocalStoragePayments(): any[] {
-    try {
-      return JSON.parse(localStorage.getItem("payments") || "[]");
-    } catch {
-      return [];
-    }
-  }
-
-  // Fetch payment requests: localStorage (primary) + Firestore (secondary)
+  // ── Real-time listener on Firestore "payments" collection ──
   // biome-ignore lint/correctness/useExhaustiveDependencies: isAdmin is the only relevant dep
   useEffect(() => {
     if (!isAdmin) return;
 
-    // Load localStorage payments immediately
-    const localPayments = loadLocalStoragePayments().map(
-      (p: any, i: number) => ({
-        id: p.id || `local_${i}_${p.timestamp || Date.now()}`,
-        upiRef: p.utr,
-        screenshotUrl: p.screenshot,
-        status: p.status,
-        plan: p.plan,
-        planId: p.plan,
-        userName: p.userName || "User",
-        userPhone: p.userPhone || "",
-        timestamp: p.timestamp || 0,
-        _source: "local",
-        _localIndex: i,
-      }),
-    );
-    setAllPaymentRequests(localPayments);
+    // Primary: listen to Firestore "payments" collection in real-time (onSnapshot)
+    const paymentsRef = collection(db, "payments");
+    const firestoreUnsub = onSnapshot(
+      paymentsRef,
+      (snap) => {
+        const firestoreDocs = snap.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+          // Normalize field names for display
+          UTR: (d.data() as any).UTR ?? (d.data() as any).utr ?? "",
+          screenshot:
+            (d.data() as any).screenshot ??
+            (d.data() as any).screenshotUrl ??
+            "",
+          planAmount:
+            (d.data() as any).planAmount ??
+            (d.data() as any).planId ??
+            (d.data() as any).plan ??
+            0,
+          _source: "firestore",
+        }));
 
-    // Also listen to Firestore and merge
-    const unsub = onSnapshot(collection(db, "paymentRequests"), (snap) => {
-      const firestorePayments = snap.docs.map((d) => ({
-        id: d.id,
-        ...d.data(),
-        _source: "firestore",
-      }));
-      // Merge: Firestore records first, then local-only records
-      const firestoreIds = new Set(firestorePayments.map((r: any) => r.id));
-      const localOnly = loadLocalStoragePayments()
-        .map((p: any, i: number) => ({
-          id: p.id || `local_${i}_${p.timestamp || Date.now()}`,
-          upiRef: p.utr,
-          screenshotUrl: p.screenshot,
-          status: p.status,
-          plan: p.plan,
-          planId: p.plan,
-          userName: p.userName || "User",
-          userPhone: p.userPhone || "",
-          timestamp: p.timestamp || 0,
-          _source: "local",
-          _localIndex: i,
-        }))
-        .filter((r: any) => !firestoreIds.has(r.id));
-      setAllPaymentRequests([...firestorePayments, ...localOnly]);
-    });
-    return () => unsub();
+        // Also merge any localStorage-only records not yet in Firestore
+        const firestoreIds = new Set(firestoreDocs.map((r: any) => r.id));
+        let localDocs: any[] = [];
+        try {
+          const raw = JSON.parse(localStorage.getItem("payments") || "[]");
+          localDocs = raw
+            .map((p: any, i: number) => ({
+              id: p.id || `local_${i}_${p.timestamp || Date.now()}`,
+              userId: p.userId ?? p.userPhone ?? "",
+              name: p.name ?? p.userName ?? "User",
+              phone: p.phone ?? p.userPhone ?? "",
+              planAmount: p.planAmount ?? p.amount ?? p.plan ?? 0,
+              UTR: p.UTR ?? p.utr ?? "",
+              screenshot: p.screenshot ?? p.screenshotUrl ?? "",
+              status: p.status ?? "pending",
+              createdAt: p.createdAt ?? p.timestamp ?? null,
+              _source: "local",
+              _localIndex: i,
+            }))
+            .filter((r: any) => !firestoreIds.has(r.id));
+        } catch {
+          // ignore
+        }
+
+        const merged = [...firestoreDocs, ...localDocs];
+        // Sort newest first (by createdAt.seconds if available, else timestamp)
+        merged.sort((a: any, b: any) => {
+          const aTime =
+            a.createdAt?.seconds ??
+            (typeof a.createdAt === "number" ? a.createdAt / 1000 : 0);
+          const bTime =
+            b.createdAt?.seconds ??
+            (typeof b.createdAt === "number" ? b.createdAt / 1000 : 0);
+          return bTime - aTime;
+        });
+        setAllPaymentRequests(merged);
+      },
+      () => {
+        // Firestore unavailable — load from localStorage only
+        try {
+          const raw = JSON.parse(localStorage.getItem("payments") || "[]");
+          const localDocs = raw.map((p: any, i: number) => ({
+            id: p.id || `local_${i}_${p.timestamp || Date.now()}`,
+            userId: p.userId ?? p.userPhone ?? "",
+            name: p.name ?? p.userName ?? "User",
+            phone: p.phone ?? p.userPhone ?? "",
+            planAmount: p.planAmount ?? p.amount ?? p.plan ?? 0,
+            UTR: p.UTR ?? p.utr ?? "",
+            screenshot: p.screenshot ?? p.screenshotUrl ?? "",
+            status: p.status ?? "pending",
+            createdAt: p.createdAt ?? p.timestamp ?? null,
+            _source: "local",
+            _localIndex: i,
+          }));
+          setAllPaymentRequests(localDocs);
+        } catch {
+          setAllPaymentRequests([]);
+        }
+      },
+    );
+
+    return () => firestoreUnsub();
   }, [isAdmin]);
 
-  function updateLocalPaymentStatus(req: any, newStatus: string) {
-    try {
-      const payments = JSON.parse(localStorage.getItem("payments") || "[]");
-      // match by index if available, else by utr
-      let updated = false;
-      if (typeof req._localIndex === "number" && payments[req._localIndex]) {
-        payments[req._localIndex].status = newStatus;
-        updated = true;
+  async function handleApproveFirestorePayment(req: any) {
+    // req can be from Firestore "payments" or localStorage fallback
+    const isFirestoreDoc = req._source === "firestore";
+
+    if (isFirestoreDoc) {
+      // ── Firestore path: use approveFirestorePayment (getDoc + updateDoc) ──
+      const result = await approveFirestorePayment(req.id);
+      if (result.success) {
+        toast.success("✅ Approved! Income & wallet updated in Firestore.");
+      } else if (result.error === "Already approved") {
+        toast.error("This payment is already approved.");
+        return;
       } else {
-        for (let i = 0; i < payments.length; i++) {
-          if (payments[i].utr === req.upiRef) {
-            payments[i].status = newStatus;
-            updated = true;
-            break;
+        // Firestore user update failed — fall back to localStorage
+        console.warn("[Approval] Firestore user update failed:", result.error);
+        const paymentData = {
+          id: req.id ?? String(Date.now()),
+          name: req.name ?? req.userName ?? "User",
+          phone: req.phone ?? req.userPhone ?? "",
+          plan: String(req.planAmount ?? req.planId ?? req.plan ?? ""),
+          amount: Number(req.planAmount ?? req.planId ?? req.plan ?? 0),
+          utr: req.UTR ?? req.upiRef ?? req.utr ?? "",
+          screenshot: req.screenshot ?? req.screenshotUrl ?? "",
+          status: "pending" as const,
+          userId: req.userId ?? "",
+        };
+        applyFullMLMApproval(paymentData);
+        toast.success("✅ Approved! Income distributed (localStorage mode).");
+      }
+    } else {
+      // ── localStorage-only fallback path ──
+      const paymentData = {
+        id: req.id ?? String(Date.now()),
+        name: req.name ?? req.userName ?? "User",
+        phone: req.phone ?? req.userPhone ?? "",
+        plan: String(req.planAmount ?? req.planId ?? req.plan ?? ""),
+        amount: Number(req.planAmount ?? req.planId ?? req.plan ?? 0),
+        utr: req.UTR ?? req.upiRef ?? req.utr ?? "",
+        screenshot: req.screenshot ?? req.screenshotUrl ?? "",
+        status: "pending" as const,
+        userId: req.userId ?? "",
+      };
+      applyFullMLMApproval(paymentData);
+      toast.success("✅ Approved! Income distributed.");
+
+      // Update localStorage status
+      try {
+        const payments = JSON.parse(localStorage.getItem("payments") || "[]");
+        if (typeof req._localIndex === "number" && payments[req._localIndex]) {
+          payments[req._localIndex].status = "approved";
+        } else {
+          for (let i = 0; i < payments.length; i++) {
+            if (payments[i].utr === req.UTR || payments[i].utr === req.utr) {
+              payments[i].status = "approved";
+              break;
+            }
           }
         }
+        localStorage.setItem("payments", JSON.stringify(payments));
+      } catch {
+        // ignore
       }
-      if (updated) localStorage.setItem("payments", JSON.stringify(payments));
-    } catch {
-      // ignore
     }
-  }
-
-  async function handleApproveFirestorePayment(req: any) {
-    const paymentData = {
-      id: req.id ?? String(Date.now()),
-      name: req.userName ?? req.name ?? "User",
-      phone: req.userPhone ?? req.phone ?? "",
-      plan: String(req.planId ?? req.plan ?? ""),
-      amount: Number(req.planId ?? req.plan ?? req.amount ?? 0),
-      utr: req.upiRef ?? req.utr ?? "",
-      screenshot: req.screenshotUrl ?? req.screenshot ?? "",
-      status: "pending" as const,
-      userId: req.userId ?? "",
-    };
-
-    // ── Try Firestore path first (getDoc + updateDoc, (value || 0) safe) ──
-    const firestoreResult = await applyFirestoreMLMApproval(paymentData);
-
-    if (firestoreResult.success) {
-      // Firestore update succeeded
-      toast.success("✅ Approved! Income & wallet updated in Firestore.");
-    } else {
-      // Firestore failed or user not in Firestore — fall back to localStorage
-      console.warn(
-        "[Approval] Firestore path failed:",
-        firestoreResult.error,
-        "— using localStorage fallback",
-      );
-      applyFullMLMApproval(paymentData);
-      toast.success("✅ Approved! Income distributed (localStorage mode).");
-    }
-
-    // Always update localStorage payment status (for same-browser display)
-    updateLocalPaymentStatus(req, "approved");
 
     // Notify OrdersTab to re-read orders
     window.dispatchEvent(new Event("storage"));
 
+    // Update local state immediately (removed from pending list via onSnapshot too)
     setAllPaymentRequests((prev) =>
       prev.map((r) => (r.id === req.id ? { ...r, status: "approved" } : r)),
     );
   }
 
   async function handleRejectFirestorePayment(req: any) {
-    // Always update localStorage["payments"] so same-browser user sees the result
-    updateLocalPaymentStatus(req, "rejected");
+    const isFirestoreDoc = req._source === "firestore";
+
+    if (isFirestoreDoc) {
+      const result = await rejectFirestorePayment(req.id);
+      if (result.success) {
+        toast.success("Payment rejected.");
+      } else {
+        toast.error("Failed to reject payment.");
+        return;
+      }
+    } else {
+      // localStorage fallback
+      try {
+        const payments = JSON.parse(localStorage.getItem("payments") || "[]");
+        if (typeof req._localIndex === "number" && payments[req._localIndex]) {
+          payments[req._localIndex].status = "rejected";
+        } else {
+          for (let i = 0; i < payments.length; i++) {
+            if (payments[i].utr === req.UTR || payments[i].utr === req.utr) {
+              payments[i].status = "rejected";
+              break;
+            }
+          }
+        }
+        localStorage.setItem("payments", JSON.stringify(payments));
+        toast.success("Payment rejected.");
+      } catch {
+        toast.error("Failed to reject payment.");
+        return;
+      }
+    }
+
     setAllPaymentRequests((prev) =>
       prev.map((r) => (r.id === req.id ? { ...r, status: "rejected" } : r)),
     );
-    toast.success("Payment rejected");
-
-    try {
-      await setDoc(
-        doc(db, "paymentRequests", req.id),
-        { status: "rejected" },
-        { merge: true },
-      );
-    } catch {
-      // Firestore update failed but localStorage is already updated
-    }
   }
 
   const pendingWithdrawals = userData.withdrawals.filter(
@@ -1499,7 +1634,19 @@ export function AdminPage() {
                   {allPaymentRequests
                     .filter((r) => r.status === "pending")
                     .map((req, i) => {
-                      const plan = PLANS.find((p) => p.id === req.planId);
+                      // Support both "payments" collection fields and legacy fields
+                      const displayName = req.name ?? req.userName ?? "User";
+                      const displayPhone = req.phone ?? req.userPhone ?? "";
+                      const displayAmount =
+                        req.planAmount ?? req.planId ?? req.plan ?? 0;
+                      const displayUTR = req.UTR ?? req.upiRef ?? req.utr ?? "";
+                      const displayScreenshot =
+                        req.screenshot ?? req.screenshotUrl ?? "";
+                      const displayDate = req.createdAt?.seconds
+                        ? formatDate(req.createdAt.seconds * 1000)
+                        : req.timestamp
+                          ? formatDate(req.timestamp)
+                          : "";
                       return (
                         <div
                           key={req.id}
@@ -1509,30 +1656,30 @@ export function AdminPage() {
                           <div className="flex items-start justify-between mb-2">
                             <div>
                               <p className="text-white text-sm font-semibold">
-                                {req.userName || "User"} — {req.userPhone || ""}
+                                {displayName} — {displayPhone}
                               </p>
                               <p className="text-[#808080] text-xs">
-                                {plan?.name ?? "Plan"} — ₹{req.planId}
+                                Plan — ₹{displayAmount}
                               </p>
                               <p className="text-[#606060] text-xs">
-                                UTR: {req.upiRef}
+                                UTR: {displayUTR}
                               </p>
                               <p className="text-[#505050] text-xs">
-                                {req.timestamp ? formatDate(req.timestamp) : ""}
+                                {displayDate}
                               </p>
                             </div>
                             <StatusBadge status={req.status} />
                           </div>
-                          {req.screenshotUrl && (
+                          {displayScreenshot && (
                             <div className="mt-2 mb-2">
                               <a
-                                href={req.screenshotUrl}
+                                href={displayScreenshot}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 data-ocid={`admin.payment.screenshot.${i + 1}`}
                               >
                                 <img
-                                  src={req.screenshotUrl}
+                                  src={displayScreenshot}
                                   alt="Payment screenshot"
                                   className="w-16 h-16 object-cover rounded-lg border border-gold/20 hover:border-gold/50 transition-colors cursor-pointer"
                                 />

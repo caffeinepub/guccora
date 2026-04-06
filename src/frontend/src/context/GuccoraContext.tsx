@@ -1,10 +1,13 @@
 import {
+  addDoc,
   collection,
   doc,
   getDoc,
   getDocs,
   increment,
+  onSnapshot,
   query,
+  serverTimestamp,
   setDoc,
   updateDoc,
   where,
@@ -426,6 +429,55 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
     userData.selectedPlan,
   ]);
 
+  // ── Real-time Firestore listener for current user ─────────────────────
+  // Keeps wallet, income, isActive, paidUser in sync with Firestore after admin approval
+  useEffect(() => {
+    const userId = currentUser?.id;
+    if (!userId || !isFirebaseConfigured) return;
+
+    const userRef = doc(db, "users", userId);
+    const unsub = onSnapshot(
+      userRef,
+      (snap) => {
+        if (!snap.exists()) return;
+        const d = snap.data() as Record<string, unknown>;
+        setUserData((prev) => ({
+          ...prev,
+          walletBalance:
+            typeof d.wallet === "number" ? d.wallet : prev.walletBalance,
+          directIncome:
+            typeof d.directIncome === "number"
+              ? d.directIncome
+              : prev.directIncome,
+          levelIncome:
+            typeof d.levelIncome === "number"
+              ? d.levelIncome
+              : prev.levelIncome,
+          pairIncome:
+            typeof d.pairIncome === "number" ? d.pairIncome : prev.pairIncome,
+          isActive:
+            typeof d.isActive === "boolean" ? d.isActive : prev.isActive,
+          paidUser:
+            typeof d.paidUser === "boolean" ? d.paidUser : prev.paidUser,
+          userStatus: (d.userStatus as UserStatus) ?? prev.userStatus,
+          planStatus:
+            typeof d.isActive === "boolean" && d.isActive
+              ? "active"
+              : ((d.planStatus as PlanStatus) ?? prev.planStatus),
+          selectedPlan:
+            typeof d.selectedPlan === "number"
+              ? (d.selectedPlan as 599 | 999 | 1999 | 2999)
+              : prev.selectedPlan,
+        }));
+      },
+      () => {
+        // Firestore listener error — ignore, keep localStorage values
+      },
+    );
+    return () => unsub();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
+
   // isProfileComplete: user is logged in
   const isProfileComplete = !!currentUser;
 
@@ -844,22 +896,22 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
           ...prev.notifications,
         ],
       }));
-      // Persist to Firestore so admin can see it
+      // Persist to Firestore "payments" collection (primary source for admin panel)
       if (isFirebaseConfigured) {
-        const userId = currentUserRef.current?.id;
-        const userPhone = currentUserRef.current?.phone ?? "";
-        const userName = currentUserRef.current?.name ?? "";
-        setDoc(
-          doc(db, "paymentRequests", req.id),
-          {
-            userId: userId ?? "",
-            userPhone,
-            userName,
-            ...req,
-          },
-          { merge: true },
-        ).catch(() => {
-          // ignore Firestore write failures
+        const userId = currentUserRef.current?.id ?? "";
+        const name = currentUserRef.current?.name ?? "";
+        const phone = currentUserRef.current?.phone ?? "";
+        addDoc(collection(db, "payments"), {
+          userId,
+          name,
+          phone,
+          planAmount: Number(planId),
+          UTR: upiRef,
+          screenshot: screenshotUrl,
+          status: "pending",
+          createdAt: serverTimestamp(),
+        }).catch(() => {
+          // Firestore write failed — PlansPage already saved to localStorage as fallback
         });
       }
     },

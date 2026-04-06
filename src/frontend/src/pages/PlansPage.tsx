@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { useGuccora } from "../context/GuccoraContext";
 import { useProducts } from "../hooks/useProducts";
 import type { Product } from "../hooks/useProducts";
+import { savePaymentToFirestore } from "../utils/firestorePayments";
 
 const DEFAULT_IMAGE =
   "https://images.unsplash.com/photo-1607082348824-0a96f2a4b9da?w=600&q=80";
@@ -120,29 +121,49 @@ export function ProductsPage() {
     const reader = new FileReader();
     reader.onload = async () => {
       const base64 = reader.result as string;
-      submitPaymentRequest(String(product.price), utr.trim(), base64);
 
-      // Save to localStorage["payments"] so admin panel can read it
-      try {
-        const existing = JSON.parse(localStorage.getItem("payments") || "[]");
-        existing.push({
-          utr: utr.trim(),
-          screenshot: base64,
-          status: "pending",
-          plan: String(product.price),
-          amount: Number(product.price),
-          name: currentUser?.name ?? "",
-          phone: currentUser?.phone ?? "",
-          userName: currentUser?.name ?? "",
-          userPhone: currentUser?.phone ?? "",
-          timestamp: Date.now(),
-        });
-        localStorage.setItem("payments", JSON.stringify(existing));
-      } catch {
-        // ignore
+      // 1. Save to Firestore "payments" collection (primary source)
+      const result = await savePaymentToFirestore({
+        userId: currentUser.id ?? currentUser.phone ?? "",
+        name: currentUser.name ?? "",
+        phone: currentUser.phone ?? "",
+        planAmount: Number(product.price),
+        UTR: utr.trim(),
+        screenshot: base64,
+      });
+
+      if (result.success) {
+        toast.success("Payment submitted. Waiting for admin approval");
+      } else {
+        // Firestore failed — fall back to localStorage so admin can still see it
+        try {
+          const existing = JSON.parse(localStorage.getItem("payments") || "[]");
+          existing.push({
+            utr: utr.trim(),
+            screenshot: base64,
+            status: "pending",
+            plan: String(product.price),
+            planAmount: Number(product.price),
+            amount: Number(product.price),
+            name: currentUser?.name ?? "",
+            phone: currentUser?.phone ?? "",
+            userName: currentUser?.name ?? "",
+            userPhone: currentUser?.phone ?? "",
+            userId: currentUser?.id ?? currentUser?.phone ?? "",
+            timestamp: Date.now(),
+          });
+          localStorage.setItem("payments", JSON.stringify(existing));
+        } catch {
+          // ignore
+        }
+        toast.success(
+          "Payment submitted (offline mode). Waiting for admin approval",
+        );
       }
 
-      toast.success("Payment submitted. Waiting for admin approval");
+      // Also update local plan status so UI reflects "pending"
+      submitPaymentRequest(String(product.price), utr.trim(), base64);
+
       // Clear form
       setUtrMap((prev) => ({ ...prev, [product.id]: "" }));
       setScreenshotMap((prev) => ({ ...prev, [product.id]: null }));
