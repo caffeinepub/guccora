@@ -1,5 +1,4 @@
 import {
-  addDoc,
   collection,
   doc,
   getDoc,
@@ -7,7 +6,6 @@ import {
   increment,
   onSnapshot,
   query,
-  serverTimestamp,
   setDoc,
   updateDoc,
   where,
@@ -468,6 +466,10 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
             typeof d.selectedPlan === "number"
               ? (d.selectedPlan as 599 | 999 | 1999 | 2999)
               : prev.selectedPlan,
+          planId:
+            typeof d.planId === "string"
+              ? (d.planId as "599" | "999" | "1999" | "2999")
+              : prev.planId,
         }));
       },
       () => {
@@ -896,24 +898,8 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
           ...prev.notifications,
         ],
       }));
-      // Persist to Firestore "payments" collection (primary source for admin panel)
-      if (isFirebaseConfigured) {
-        const userId = currentUserRef.current?.id ?? "";
-        const name = currentUserRef.current?.name ?? "";
-        const phone = currentUserRef.current?.phone ?? "";
-        addDoc(collection(db, "payments"), {
-          userId,
-          name,
-          phone,
-          planAmount: Number(planId),
-          UTR: upiRef,
-          screenshot: screenshotUrl,
-          status: "pending",
-          createdAt: serverTimestamp(),
-        }).catch(() => {
-          // Firestore write failed — PlansPage already saved to localStorage as fallback
-        });
-      }
+      // Note: Firestore write is handled by PlansPage via savePaymentToFirestore()
+      // This function only updates local UI state
     },
     [],
   );

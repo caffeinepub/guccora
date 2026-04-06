@@ -122,9 +122,9 @@ export function ProductsPage() {
     reader.onload = async () => {
       const base64 = reader.result as string;
 
-      // 1. Save to Firestore "payments" collection (primary source)
+      // Save to Firestore "payments" collection
       const result = await savePaymentToFirestore({
-        userId: currentUser.id ?? currentUser.phone ?? "",
+        userId: currentUser.id || currentUser.phone || "",
         name: currentUser.name ?? "",
         phone: currentUser.phone ?? "",
         planAmount: Number(product.price),
@@ -135,33 +135,12 @@ export function ProductsPage() {
       if (result.success) {
         toast.success("Payment submitted. Waiting for admin approval");
       } else {
-        // Firestore failed — fall back to localStorage so admin can still see it
-        try {
-          const existing = JSON.parse(localStorage.getItem("payments") || "[]");
-          existing.push({
-            utr: utr.trim(),
-            screenshot: base64,
-            status: "pending",
-            plan: String(product.price),
-            planAmount: Number(product.price),
-            amount: Number(product.price),
-            name: currentUser?.name ?? "",
-            phone: currentUser?.phone ?? "",
-            userName: currentUser?.name ?? "",
-            userPhone: currentUser?.phone ?? "",
-            userId: currentUser?.id ?? currentUser?.phone ?? "",
-            timestamp: Date.now(),
-          });
-          localStorage.setItem("payments", JSON.stringify(existing));
-        } catch {
-          // ignore
-        }
-        toast.success(
-          "Payment submitted (offline mode). Waiting for admin approval",
-        );
+        toast.error("Failed to submit payment. Please try again.");
+        setSubmittingId(null);
+        return;
       }
 
-      // Also update local plan status so UI reflects "pending"
+      // Update local plan status so UI reflects "pending"
       submitPaymentRequest(String(product.price), utr.trim(), base64);
 
       // Clear form

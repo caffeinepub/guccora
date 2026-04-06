@@ -170,7 +170,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
           )}
         </div>
 
-        {plan && userData.planStatus === "active" ? (
+        {userData.isActive && userData.planStatus === "active" && plan ? (
           <div>
             <div className="flex items-center justify-between">
               <div>
