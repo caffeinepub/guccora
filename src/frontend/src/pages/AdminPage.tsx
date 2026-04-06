@@ -33,7 +33,10 @@ import { PLANS, useGuccora } from "../context/GuccoraContext";
 import { db, isFirebaseConfigured } from "../firebase";
 import { useProducts } from "../hooks/useProducts";
 import type { Product } from "../hooks/useProducts";
-import { applyFullMLMApproval } from "../utils/mlmApproval";
+import {
+  applyFirestoreMLMApproval,
+  applyFullMLMApproval,
+} from "../utils/mlmApproval";
 import { callApproveOrder } from "../utils/mlmFunctions";
 
 type FirestoreUser = {
@@ -599,10 +602,9 @@ function OrdersTab() {
       setApprovingId(null);
       return;
     } catch {
-      // Firebase not configured — fall back to localStorage approval
+      // Cloud function not available — try direct Firestore path
     }
 
-    // ── Full MLM localStorage approval ────────────────────────────────
     try {
       const raw = localStorage.getItem("orders");
       const allOrders: GlobalOrder[] = raw ? JSON.parse(raw) : [];
@@ -621,8 +623,7 @@ function OrdersTab() {
         return;
       }
 
-      // Apply full MLM: Direct + Level + Pair + Admin wallet + Orders
-      applyFullMLMApproval({
+      const paymentData = {
         id: orderData.id,
         name: orderData.userName,
         phone: orderData.phone,
@@ -633,9 +634,22 @@ function OrdersTab() {
         utr: ((orderData as Record<string, unknown>).utr as string) ?? "",
         screenshot:
           ((orderData as Record<string, unknown>).screenshot as string) ?? "",
-        status: "pending",
+        status: "pending" as const,
         userId: orderData.userId,
-      });
+      };
+
+      // ── Try Firestore path first (getDoc + updateDoc) ──
+      const firestoreResult = await applyFirestoreMLMApproval(paymentData);
+
+      if (!firestoreResult.success) {
+        // Firestore failed — fall back to localStorage
+        console.warn(
+          "[OrderApprove] Firestore failed:",
+          firestoreResult.error,
+          "— using localStorage",
+        );
+        applyFullMLMApproval(paymentData);
+      }
 
       // Update local state immediately
       setOrders((prev) =>
@@ -646,7 +660,11 @@ function OrdersTab() {
         ),
       );
 
-      toast.success("✅ Full MLM Applied: Direct + Level + Pair + Order Added");
+      toast.success(
+        firestoreResult.success
+          ? "✅ Approved! Income & wallet updated in Firestore."
+          : "✅ Approved! Income distributed (localStorage mode).",
+      );
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Approval failed. Try again.";
@@ -1140,8 +1158,7 @@ export function AdminPage() {
   }
 
   async function handleApproveFirestorePayment(req: any) {
-    // Apply full MLM: Direct + Level + Pair + Admin wallet + Orders + Activate user
-    applyFullMLMApproval({
+    const paymentData = {
       id: req.id ?? String(Date.now()),
       name: req.userName ?? req.name ?? "User",
       phone: req.userPhone ?? req.phone ?? "",
@@ -1149,11 +1166,28 @@ export function AdminPage() {
       amount: Number(req.planId ?? req.plan ?? req.amount ?? 0),
       utr: req.upiRef ?? req.utr ?? "",
       screenshot: req.screenshotUrl ?? req.screenshot ?? "",
-      status: "pending",
+      status: "pending" as const,
       userId: req.userId ?? "",
-    });
+    };
 
-    // Update payment status in localStorage["payments"]
+    // ── Try Firestore path first (getDoc + updateDoc, (value || 0) safe) ──
+    const firestoreResult = await applyFirestoreMLMApproval(paymentData);
+
+    if (firestoreResult.success) {
+      // Firestore update succeeded
+      toast.success("✅ Approved! Income & wallet updated in Firestore.");
+    } else {
+      // Firestore failed or user not in Firestore — fall back to localStorage
+      console.warn(
+        "[Approval] Firestore path failed:",
+        firestoreResult.error,
+        "— using localStorage fallback",
+      );
+      applyFullMLMApproval(paymentData);
+      toast.success("✅ Approved! Income distributed (localStorage mode).");
+    }
+
+    // Always update localStorage payment status (for same-browser display)
     updateLocalPaymentStatus(req, "approved");
 
     // Notify OrdersTab to re-read orders
@@ -1162,31 +1196,6 @@ export function AdminPage() {
     setAllPaymentRequests((prev) =>
       prev.map((r) => (r.id === req.id ? { ...r, status: "approved" } : r)),
     );
-    toast.success("✅ Full MLM Applied: Direct + Level + Pair + Order Added");
-
-    // Also update Firestore if configured (non-blocking)
-    try {
-      await setDoc(
-        doc(db, "paymentRequests", req.id),
-        { status: "approved" },
-        { merge: true },
-      );
-      if (req.userId) {
-        await setDoc(
-          doc(db, "users", req.userId),
-          {
-            paidUser: true,
-            selectedPlan: Number(req.planId),
-            planStatus: "active",
-            isActive: true,
-            userStatus: "active",
-          },
-          { merge: true },
-        );
-      }
-    } catch {
-      // Firestore update failed but localStorage is already updated
-    }
   }
 
   async function handleRejectFirestorePayment(req: any) {
@@ -1477,82 +1486,90 @@ export function AdminPage() {
                   </span>
                 )}
               </div>
-              {allPaymentRequests.length === 0 ? (
+              {allPaymentRequests.filter((r) => r.status === "pending")
+                .length === 0 ? (
                 <div
                   className="text-center py-6 text-[#606060] text-sm"
                   data-ocid="admin.payments.empty_state"
                 >
-                  No payment requests yet
+                  No pending orders
                 </div>
               ) : (
                 <div className="divide-y divide-white/5">
-                  {allPaymentRequests.map((req, i) => {
-                    const plan = PLANS.find((p) => p.id === req.planId);
-                    return (
-                      <div
-                        key={req.id}
-                        className="px-4 py-3"
-                        data-ocid={`admin.payment.item.${i + 1}`}
-                      >
-                        <div className="flex items-start justify-between mb-2">
-                          <div>
-                            <p className="text-white text-sm font-semibold">
-                              {req.userName || "User"} — {req.userPhone || ""}
-                            </p>
-                            <p className="text-[#808080] text-xs">
-                              {plan?.name ?? "Plan"} — ₹{req.planId}
-                            </p>
-                            <p className="text-[#606060] text-xs">
-                              UTR: {req.upiRef}
-                            </p>
-                            <p className="text-[#505050] text-xs">
-                              {req.timestamp ? formatDate(req.timestamp) : ""}
-                            </p>
+                  {allPaymentRequests
+                    .filter((r) => r.status === "pending")
+                    .map((req, i) => {
+                      const plan = PLANS.find((p) => p.id === req.planId);
+                      return (
+                        <div
+                          key={req.id}
+                          className="px-4 py-3"
+                          data-ocid={`admin.payment.item.${i + 1}`}
+                        >
+                          <div className="flex items-start justify-between mb-2">
+                            <div>
+                              <p className="text-white text-sm font-semibold">
+                                {req.userName || "User"} — {req.userPhone || ""}
+                              </p>
+                              <p className="text-[#808080] text-xs">
+                                {plan?.name ?? "Plan"} — ₹{req.planId}
+                              </p>
+                              <p className="text-[#606060] text-xs">
+                                UTR: {req.upiRef}
+                              </p>
+                              <p className="text-[#505050] text-xs">
+                                {req.timestamp ? formatDate(req.timestamp) : ""}
+                              </p>
+                            </div>
+                            <StatusBadge status={req.status} />
                           </div>
-                          <StatusBadge status={req.status} />
+                          {req.screenshotUrl && (
+                            <div className="mt-2 mb-2">
+                              <a
+                                href={req.screenshotUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                data-ocid={`admin.payment.screenshot.${i + 1}`}
+                              >
+                                <img
+                                  src={req.screenshotUrl}
+                                  alt="Payment screenshot"
+                                  className="w-16 h-16 object-cover rounded-lg border border-gold/20 hover:border-gold/50 transition-colors cursor-pointer"
+                                />
+                              </a>
+                              <p className="text-[#505050] text-[10px] mt-1">
+                                Tap to view full screenshot
+                              </p>
+                            </div>
+                          )}
+                          {req.status === "pending" && (
+                            <div className="flex gap-2">
+                              <Button
+                                size="sm"
+                                onClick={() =>
+                                  handleApproveFirestorePayment(req)
+                                }
+                                className="flex-1 h-7 bg-green-500/20 text-green-400 hover:bg-green-500/30 text-xs rounded-lg"
+                                data-ocid={`admin.payment.confirm_button.${i + 1}`}
+                              >
+                                <CheckCircle size={12} className="mr-1" />{" "}
+                                Approve
+                              </Button>
+                              <Button
+                                size="sm"
+                                onClick={() =>
+                                  handleRejectFirestorePayment(req)
+                                }
+                                className="flex-1 h-7 bg-red-500/20 text-red-400 hover:bg-red-500/30 text-xs rounded-lg"
+                                data-ocid={`admin.payment.delete_button.${i + 1}`}
+                              >
+                                <XCircle size={12} className="mr-1" /> Reject
+                              </Button>
+                            </div>
+                          )}
                         </div>
-                        {req.screenshotUrl && (
-                          <div className="mt-2 mb-2">
-                            <a
-                              href={req.screenshotUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              data-ocid={`admin.payment.screenshot.${i + 1}`}
-                            >
-                              <img
-                                src={req.screenshotUrl}
-                                alt="Payment screenshot"
-                                className="w-16 h-16 object-cover rounded-lg border border-gold/20 hover:border-gold/50 transition-colors cursor-pointer"
-                              />
-                            </a>
-                            <p className="text-[#505050] text-[10px] mt-1">
-                              Tap to view full screenshot
-                            </p>
-                          </div>
-                        )}
-                        {req.status === "pending" && (
-                          <div className="flex gap-2">
-                            <Button
-                              size="sm"
-                              onClick={() => handleApproveFirestorePayment(req)}
-                              className="flex-1 h-7 bg-green-500/20 text-green-400 hover:bg-green-500/30 text-xs rounded-lg"
-                              data-ocid={`admin.payment.confirm_button.${i + 1}`}
-                            >
-                              <CheckCircle size={12} className="mr-1" /> Approve
-                            </Button>
-                            <Button
-                              size="sm"
-                              onClick={() => handleRejectFirestorePayment(req)}
-                              className="flex-1 h-7 bg-red-500/20 text-red-400 hover:bg-red-500/30 text-xs rounded-lg"
-                              data-ocid={`admin.payment.delete_button.${i + 1}`}
-                            >
-                              <XCircle size={12} className="mr-1" /> Reject
-                            </Button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
                 </div>
               )}
             </div>

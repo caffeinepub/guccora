@@ -410,6 +410,8 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
       levelIncome: userData.levelIncome,
       pairIncome: userData.pairIncome,
       paidUser: userData.paidUser,
+      selectedPlan: userData.selectedPlan ?? undefined,
+      planActive: userData.paidUser === true,
     });
   }, [
     currentUser?.id,
@@ -421,6 +423,7 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
     userData.levelIncome,
     userData.pairIncome,
     userData.paidUser,
+    userData.selectedPlan,
   ]);
 
   // isProfileComplete: user is logged in
@@ -516,7 +519,69 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
                 ? found.pairIncome
                 : prev.pairIncome,
             paidUser: found.paidUser === true,
+            selectedPlan:
+              (found.selectedPlan ?? found.plan)
+                ? (Number(found.selectedPlan ?? found.plan) as
+                    | 599
+                    | 999
+                    | 1999
+                    | 2999)
+                : null,
+            planActive: found.planActive === true,
           }));
+
+          // After login, silently fetch latest values from Firestore to override stale localStorage
+          if (isFirebaseConfigured && found.id) {
+            getDoc(doc(db, "users", found.id))
+              .then((snap) => {
+                if (!snap.exists()) return;
+                const d = snap.data() as Record<string, unknown>;
+                setUserData((prev) => ({
+                  ...prev,
+                  walletBalance:
+                    typeof d.wallet === "number"
+                      ? d.wallet
+                      : prev.walletBalance,
+                  directIncome:
+                    typeof d.directIncome === "number"
+                      ? d.directIncome
+                      : prev.directIncome,
+                  levelIncome:
+                    typeof d.levelIncome === "number"
+                      ? d.levelIncome
+                      : prev.levelIncome,
+                  pairIncome:
+                    typeof d.pairIncome === "number"
+                      ? d.pairIncome
+                      : prev.pairIncome,
+                  isActive:
+                    typeof d.isActive === "boolean"
+                      ? d.isActive
+                      : prev.isActive,
+                  userStatus: (d.userStatus as UserStatus) ?? prev.userStatus,
+                  planStatus: (d.planStatus as PlanStatus) ?? prev.planStatus,
+                  paidUser:
+                    typeof d.paidUser === "boolean"
+                      ? d.paidUser
+                      : prev.paidUser,
+                }));
+                // Sync updated Firestore values back to localStorage users array
+                saveUserToUsersArray(found.id, {
+                  wallet: d.wallet ?? found.wallet,
+                  directIncome: d.directIncome ?? found.directIncome,
+                  levelIncome: d.levelIncome ?? found.levelIncome,
+                  pairIncome: d.pairIncome ?? found.pairIncome,
+                  isActive: d.isActive ?? found.isActive,
+                  userStatus: d.userStatus ?? found.userStatus,
+                  planStatus: d.planStatus ?? found.planStatus,
+                  paidUser: d.paidUser ?? found.paidUser,
+                });
+              })
+              .catch(() => {
+                // Firestore unreachable — localStorage values used
+              });
+          }
+
           return {
             success: true,
             role: found.role ?? "user",
