@@ -4,7 +4,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { collection, deleteDoc, doc, onSnapshot } from "firebase/firestore";
+import {
+  collection,
+  deleteDoc,
+  doc,
+  onSnapshot,
+  setDoc,
+} from "firebase/firestore";
 import {
   Bell,
   CheckCircle,
@@ -1152,8 +1158,7 @@ function FirestoreUsersSection() {
 export function AdminPage() {
   const {
     userData,
-    adminApprovePayment,
-    adminRejectPayment,
+    isAdmin,
     adminApproveKyc,
     adminRejectKyc,
     adminApproveWithdrawal,
@@ -1170,10 +1175,62 @@ export function AdminPage() {
   const [notifTitle, setNotifTitle] = useState("");
   const [notifMsg, setNotifMsg] = useState("");
   const [rejectReason, setRejectReason] = useState("");
+  const [allPaymentRequests, setAllPaymentRequests] = useState<any[]>([]);
 
-  const pendingPayments = userData.paymentRequests.filter(
-    (r) => r.status === "pending",
-  );
+  // Fetch all payment requests from Firestore so admin sees ALL users
+  useEffect(() => {
+    if (!isAdmin) return;
+    const unsub = onSnapshot(collection(db, "paymentRequests"), (snap) => {
+      setAllPaymentRequests(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return () => unsub();
+  }, [isAdmin]);
+
+  async function handleApproveFirestorePayment(req: any) {
+    try {
+      await setDoc(
+        doc(db, "paymentRequests", req.id),
+        { status: "approved" },
+        { merge: true },
+      );
+      if (req.userId) {
+        await setDoc(
+          doc(db, "users", req.userId),
+          {
+            paidUser: true,
+            selectedPlan: Number(req.planId),
+            planStatus: "active",
+            isActive: true,
+            userStatus: "active",
+          },
+          { merge: true },
+        );
+      }
+      setAllPaymentRequests((prev) =>
+        prev.map((r) => (r.id === req.id ? { ...r, status: "approved" } : r)),
+      );
+      toast.success("Payment approved — plan activated!");
+    } catch {
+      toast.error("Failed to approve. Try again.");
+    }
+  }
+
+  async function handleRejectFirestorePayment(req: any) {
+    try {
+      await setDoc(
+        doc(db, "paymentRequests", req.id),
+        { status: "rejected" },
+        { merge: true },
+      );
+      setAllPaymentRequests((prev) =>
+        prev.map((r) => (r.id === req.id ? { ...r, status: "rejected" } : r)),
+      );
+      toast.success("Payment rejected");
+    } catch {
+      toast.error("Failed to reject. Try again.");
+    }
+  }
+
   const pendingWithdrawals = userData.withdrawals.filter(
     (w) => w.status === "pending",
   );
@@ -1416,7 +1473,7 @@ export function AdminPage() {
         {/* Payments + KYC + Withdrawals */}
         <TabsContent value="payments">
           <div className="space-y-4">
-            {/* Pending Payments */}
+            {/* All Users Payment Requests (Firestore) */}
             <div
               className="rounded-2xl border border-gold/10 overflow-hidden"
               style={{ background: "#141414" }}
@@ -1425,22 +1482,27 @@ export function AdminPage() {
                 <h2 className="text-white font-semibold text-sm">
                   Payment Requests
                 </h2>
-                {pendingPayments.length > 0 && (
+                {allPaymentRequests.filter((r) => r.status === "pending")
+                  .length > 0 && (
                   <span className="text-xs text-yellow-400 font-semibold">
-                    {pendingPayments.length} pending
+                    {
+                      allPaymentRequests.filter((r) => r.status === "pending")
+                        .length
+                    }{" "}
+                    pending
                   </span>
                 )}
               </div>
-              {userData.paymentRequests.length === 0 ? (
+              {allPaymentRequests.length === 0 ? (
                 <div
                   className="text-center py-6 text-[#606060] text-sm"
                   data-ocid="admin.payments.empty_state"
                 >
-                  No payment requests
+                  No payment requests yet
                 </div>
               ) : (
                 <div className="divide-y divide-white/5">
-                  {userData.paymentRequests.map((req, i) => {
+                  {allPaymentRequests.map((req, i) => {
                     const plan = PLANS.find((p) => p.id === req.planId);
                     return (
                       <div
@@ -1451,25 +1513,44 @@ export function AdminPage() {
                         <div className="flex items-start justify-between mb-2">
                           <div>
                             <p className="text-white text-sm font-semibold">
+                              {req.userName || "User"} — {req.userPhone || ""}
+                            </p>
+                            <p className="text-[#808080] text-xs">
                               {plan?.name ?? "Plan"} — ₹{req.planId}
                             </p>
                             <p className="text-[#606060] text-xs">
-                              UPI Ref: {req.upiRef}
+                              UTR: {req.upiRef}
                             </p>
                             <p className="text-[#505050] text-xs">
-                              {formatDate(req.timestamp)}
+                              {req.timestamp ? formatDate(req.timestamp) : ""}
                             </p>
                           </div>
                           <StatusBadge status={req.status} />
                         </div>
+                        {req.screenshotUrl && (
+                          <div className="mt-2 mb-2">
+                            <a
+                              href={req.screenshotUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              data-ocid={`admin.payment.screenshot.${i + 1}`}
+                            >
+                              <img
+                                src={req.screenshotUrl}
+                                alt="Payment screenshot"
+                                className="w-16 h-16 object-cover rounded-lg border border-gold/20 hover:border-gold/50 transition-colors cursor-pointer"
+                              />
+                            </a>
+                            <p className="text-[#505050] text-[10px] mt-1">
+                              Tap to view full screenshot
+                            </p>
+                          </div>
+                        )}
                         {req.status === "pending" && (
                           <div className="flex gap-2">
                             <Button
                               size="sm"
-                              onClick={() => {
-                                adminApprovePayment(req.id);
-                                toast.success("Payment approved!");
-                              }}
+                              onClick={() => handleApproveFirestorePayment(req)}
                               className="flex-1 h-7 bg-green-500/20 text-green-400 hover:bg-green-500/30 text-xs rounded-lg"
                               data-ocid={`admin.payment.confirm_button.${i + 1}`}
                             >
@@ -1477,10 +1558,7 @@ export function AdminPage() {
                             </Button>
                             <Button
                               size="sm"
-                              onClick={() => {
-                                adminRejectPayment(req.id);
-                                toast.success("Payment rejected");
-                              }}
+                              onClick={() => handleRejectFirestorePayment(req)}
                               className="flex-1 h-7 bg-red-500/20 text-red-400 hover:bg-red-500/30 text-xs rounded-lg"
                               data-ocid={`admin.payment.delete_button.${i + 1}`}
                             >

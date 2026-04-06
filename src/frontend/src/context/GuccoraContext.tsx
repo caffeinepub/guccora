@@ -15,6 +15,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { db, isFirebaseConfigured } from "../firebase";
@@ -348,6 +349,10 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
     }
     return null;
   });
+
+  // Ref to always have latest currentUser in useCallback closures
+  const currentUserRef = useRef<CurrentUser | null>(null);
+  currentUserRef.current = currentUser;
 
   const [userData, setUserData] = useState<UserData>(() => {
     try {
@@ -774,6 +779,24 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
           ...prev.notifications,
         ],
       }));
+      // Persist to Firestore so admin can see it
+      if (isFirebaseConfigured) {
+        const userId = currentUserRef.current?.id;
+        const userPhone = currentUserRef.current?.phone ?? "";
+        const userName = currentUserRef.current?.name ?? "";
+        setDoc(
+          doc(db, "paymentRequests", req.id),
+          {
+            userId: userId ?? "",
+            userPhone,
+            userName,
+            ...req,
+          },
+          { merge: true },
+        ).catch(() => {
+          // ignore Firestore write failures
+        });
+      }
     },
     [],
   );
@@ -1086,6 +1109,16 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
           ],
         };
       });
+      // Also update Firestore paymentRequest status
+      if (isFirebaseConfigured) {
+        setDoc(
+          doc(db, "paymentRequests", requestId),
+          { status: "approved" },
+          { merge: true },
+        ).catch(() => {
+          // ignore
+        });
+      }
     },
     [currentUser?.id],
   );

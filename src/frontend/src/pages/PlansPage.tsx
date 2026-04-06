@@ -79,9 +79,15 @@ function getPlanIncome(product: Product): PlanIncome {
 }
 
 export function ProductsPage() {
-  const { userData, currentUser, markUserPaid } = useGuccora();
+  const { userData, currentUser, submitPaymentRequest } = useGuccora();
   const { products: firestoreProducts, loading } = useProducts();
-  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+
+  // Per-product UTR, screenshot, and submitting state
+  const [utrMap, setUtrMap] = useState<Record<string, string>>({});
+  const [screenshotMap, setScreenshotMap] = useState<
+    Record<string, File | null>
+  >({});
+  const [submittingId, setSubmittingId] = useState<string | null>(null);
 
   const products: Product[] = (() => {
     if (firestoreProducts.length > 0) return firestoreProducts;
@@ -99,20 +105,33 @@ export function ProductsPage() {
     return firestoreProducts;
   })();
 
-  async function handleConfirmPayment(product: Product) {
+  async function handleSubmitPayment(product: Product) {
     if (!currentUser) {
       toast.error("Please login first");
       return;
     }
-    setConfirmingId(product.id);
-    try {
-      await markUserPaid(product.price as 599 | 999 | 1999 | 2999);
-      toast.success(`Payment Successful — ₹${product.price} Plan Activated!`);
-    } catch {
-      toast.error("Failed to confirm. Please try again.");
-    } finally {
-      setConfirmingId(null);
+    const utr = utrMap[product.id] || "";
+    const file = screenshotMap[product.id];
+    if (!utr.trim() || !file) {
+      toast.error("Please enter UTR and upload screenshot");
+      return;
     }
+    setSubmittingId(product.id);
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const base64 = reader.result as string;
+      submitPaymentRequest(String(product.price), utr.trim(), base64);
+      toast.success("Payment submitted. Waiting for admin approval");
+      // Clear form
+      setUtrMap((prev) => ({ ...prev, [product.id]: "" }));
+      setScreenshotMap((prev) => ({ ...prev, [product.id]: null }));
+      setSubmittingId(null);
+    };
+    reader.onerror = () => {
+      toast.error("Failed to read screenshot. Please try again.");
+      setSubmittingId(null);
+    };
+    reader.readAsDataURL(file);
   }
 
   const activePlan = userData.paidUser ? userData.selectedPlan : null;
@@ -123,8 +142,8 @@ export function ProductsPage() {
         Choose Your Plan
       </h1>
       <p className="text-[#606060] text-sm mb-6">
-        Select a plan and pay via UPI (GPay, PhonePe, Paytm). After payment, tap
-        "Confirm Payment" to activate your plan.
+        Select a plan and pay via UPI (GPay, PhonePe, Paytm). After completing
+        payment, submit your UTR number and screenshot for admin verification.
       </p>
 
       {/* Active plan banner */}
@@ -139,10 +158,10 @@ export function ProductsPage() {
           </div>
           <div>
             <p className="text-green-400 font-bold text-sm">
-              ₹{activePlan} Plan Active
+              ₹{activePlan} Plan — Active
             </p>
             <p className="text-[#606060] text-xs">
-              Referral rewards enabled. Share your code to earn!
+              Your plan is active. Start earning!
             </p>
           </div>
         </div>
@@ -164,8 +183,8 @@ export function ProductsPage() {
             <span className="text-white font-mono font-semibold">{UPI_ID}</span>
           </p>
           <p className="text-[#606060] text-xs mt-1">
-            Tap "Pay via UPI" to open GPay / PhonePe. After completing payment,
-            tap "I have paid — Confirm Payment".
+            Tap "Pay via UPI" to open GPay / PhonePe. After payment, submit your
+            UTR number and screenshot below for admin approval.
           </p>
         </div>
       </div>
@@ -200,9 +219,15 @@ export function ProductsPage() {
           {products.map((product, i) => {
             const income = getPlanIncome(product);
             const isActive = activePlan === product.price;
-            const isConfirming = confirmingId === product.id;
             const isPlatinum = product.price === 2999;
             const imageUrl = product.imageUrl || DEFAULT_IMAGE;
+
+            // Check if there's a pending payment request for this plan
+            const hasPending = userData.paymentRequests.some(
+              (r) =>
+                r.planId === String(product.price) && r.status === "pending",
+            );
+            const isSubmitting = submittingId === product.id;
 
             return (
               <div
@@ -352,28 +377,76 @@ export function ProductsPage() {
                         Pay ₹{product.price} via UPI
                       </Button>
 
-                      {/* Confirm Payment button */}
-                      <button
-                        type="button"
-                        onClick={() => handleConfirmPayment(product)}
-                        disabled={isConfirming || !currentUser}
-                        className="w-full text-center text-[#808080] hover:text-gold text-xs py-2.5 px-3 rounded-xl border border-[#282828] hover:border-gold/30 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
-                        data-ocid={`plans.plan.confirm_button.${i + 1}`}
-                      >
-                        {isConfirming ? (
-                          <>
-                            <Loader2 size={12} className="animate-spin" />
-                            Confirming...
-                          </>
-                        ) : (
-                          "I have paid — Confirm Payment"
-                        )}
-                      </button>
-
-                      {!currentUser && (
-                        <p className="text-[#505050] text-[11px] text-center">
-                          Login required to confirm payment
+                      {/* UTR + Screenshot form or pending status */}
+                      {!currentUser ? (
+                        <p className="text-[#505050] text-[11px] text-center py-2">
+                          Login required to submit payment
                         </p>
+                      ) : hasPending ? (
+                        <div
+                          className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border border-yellow-500/20 bg-yellow-500/5"
+                          data-ocid={`plans.plan.pending_state.${i + 1}`}
+                        >
+                          <Loader2
+                            size={13}
+                            className="text-yellow-400 animate-spin"
+                          />
+                          <span className="text-yellow-400 text-xs font-semibold">
+                            ⏳ Awaiting admin approval
+                          </span>
+                        </div>
+                      ) : (
+                        <div
+                          className="space-y-2 mt-2 pt-3 border-t border-white/5"
+                          data-ocid={`plans.payment_form.panel.${i + 1}`}
+                        >
+                          <p className="text-[#606060] text-[11px] font-medium uppercase tracking-wide">
+                            Submit Payment Proof
+                          </p>
+                          <input
+                            type="text"
+                            placeholder="Enter UTR Number"
+                            value={utrMap[product.id] || ""}
+                            onChange={(e) =>
+                              setUtrMap((prev) => ({
+                                ...prev,
+                                [product.id]: e.target.value,
+                              }))
+                            }
+                            className="w-full bg-[#1a1a1a] border border-[#282828] text-white text-xs px-3 py-2 rounded-lg placeholder:text-[#505050] focus:outline-none focus:border-gold/40"
+                            data-ocid={`plans.plan.utr.input.${i + 1}`}
+                          />
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={(e) =>
+                              setScreenshotMap((prev) => ({
+                                ...prev,
+                                [product.id]: e.target.files?.[0] || null,
+                              }))
+                            }
+                            className="w-full text-xs text-[#808080] file:mr-2 file:py-1 file:px-3 file:rounded-lg file:border-0 file:bg-gold/10 file:text-gold file:text-xs cursor-pointer"
+                            data-ocid={`plans.plan.screenshot.upload_button.${i + 1}`}
+                          />
+                          <Button
+                            onClick={() => handleSubmitPayment(product)}
+                            disabled={isSubmitting}
+                            className="w-full bg-gold hover:bg-gold-light text-black font-bold h-9 rounded-xl text-xs"
+                            data-ocid={`plans.plan.submit_button.${i + 1}`}
+                          >
+                            {isSubmitting ? (
+                              <>
+                                <Loader2
+                                  size={12}
+                                  className="animate-spin mr-1"
+                                />
+                                Submitting...
+                              </>
+                            ) : (
+                              "Submit Payment"
+                            )}
+                          </Button>
+                        </div>
                       )}
                     </div>
                   )}
