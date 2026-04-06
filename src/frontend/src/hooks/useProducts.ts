@@ -16,7 +16,7 @@ export type Product = {
   name: string;
   description: string;
   price: number;
-  imageDataUrl: string;
+  imageUrl: string;
   planType: "starter" | "silver" | "gold" | "platinum";
   createdAt: number;
 };
@@ -57,6 +57,16 @@ export function useProducts() {
         // Firestore's onSnapshot always delivers the full current collection.
         setProducts(firestoreProducts);
         setLoading(false);
+
+        // Keep localStorage in sync as a fallback for unauthenticated reads
+        try {
+          localStorage.setItem(
+            "guccora_products",
+            JSON.stringify(firestoreProducts),
+          );
+        } catch {
+          // ignore storage errors (quota, private browsing)
+        }
       },
       (err) => {
         console.error("[useProducts] Firestore onSnapshot error:", err);
@@ -80,7 +90,7 @@ export function useProducts() {
           name: data.name,
           description: data.description,
           price: data.price,
-          imageDataUrl: data.imageDataUrl,
+          imageUrl: data.imageUrl,
           planType: data.planType,
           createdAt,
         });

@@ -21,7 +21,7 @@ import {
   Wallet,
   XCircle,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { PLANS, useGuccora } from "../context/GuccoraContext";
 import { db, isFirebaseConfigured } from "../firebase";
@@ -79,7 +79,7 @@ type ProductFormState = {
   name: string;
   description: string;
   price: string;
-  imageDataUrl: string;
+  imageUrl: string;
   planType: string;
 };
 
@@ -88,7 +88,7 @@ function emptyFormState(): ProductFormState {
     name: "",
     description: "",
     price: "",
-    imageDataUrl: "",
+    imageUrl: "",
     planType: "starter",
   };
 }
@@ -98,7 +98,7 @@ function productToFormState(p: Product): ProductFormState {
     name: p.name,
     description: p.description,
     price: String(p.price),
-    imageDataUrl: p.imageDataUrl,
+    imageUrl: p.imageUrl ?? "",
     planType: p.planType ?? "starter",
   };
 }
@@ -119,15 +119,21 @@ function ProductForm({
   const [form, setForm] = useState<ProductFormState>(
     initial ?? emptyFormState(),
   );
-  const fileRef = useRef<HTMLInputElement>(null);
+  const [imageLoading, setImageLoading] = useState(false);
 
-  function handleImage(e: React.ChangeEvent<HTMLInputElement>) {
+  function handleImageChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    setImageLoading(true);
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const result = ev.target?.result as string;
-      setForm((prev) => ({ ...prev, imageDataUrl: result }));
+      const base64 = ev.target?.result as string;
+      setForm((p) => ({ ...p, imageUrl: base64 }));
+      setImageLoading(false);
+    };
+    reader.onerror = () => {
+      toast.error("Failed to read image file");
+      setImageLoading(false);
     };
     reader.readAsDataURL(file);
   }
@@ -148,41 +154,62 @@ function ProductForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-3">
-      {/* Image preview + upload */}
-      <div className="flex items-center gap-3">
-        <div
-          className="w-16 h-16 rounded-xl border border-gold/20 flex items-center justify-center overflow-hidden flex-shrink-0"
-          style={{ background: "#0A0A0A" }}
-        >
-          {form.imageDataUrl ? (
+      {/* Image Upload */}
+      <div className="space-y-2">
+        <Label className="text-[#A0A0A0] text-xs flex items-center gap-1.5">
+          <ImageIcon size={11} /> Product Image
+        </Label>
+
+        {/* Preview */}
+        {form.imageUrl && (
+          <div
+            className="w-full rounded-xl border border-gold/20 overflow-hidden"
+            style={{ background: "#0A0A0A", height: "150px" }}
+          >
             <img
-              src={form.imageDataUrl}
+              src={form.imageUrl}
               alt="Preview"
               className="w-full h-full object-cover"
+              onError={(e) => {
+                (e.target as HTMLImageElement).style.display = "none";
+              }}
             />
+          </div>
+        )}
+
+        {/* Upload button */}
+        <label
+          className="flex items-center justify-center gap-2 w-full h-9 rounded-xl border border-gold/40 cursor-pointer text-gold text-sm font-semibold hover:bg-gold/5 transition-colors"
+          style={{ background: "#141414" }}
+          data-ocid="admin.product_image.upload_button"
+        >
+          {imageLoading ? (
+            <span className="text-xs text-[#A0A0A0]">Loading…</span>
           ) : (
-            <ImageIcon size={20} className="text-gold/30" />
+            <>
+              <ImageIcon size={13} />
+              {form.imageUrl ? "Change Image" : "Choose Image"}
+            </>
           )}
-        </div>
-        <div className="flex-1">
-          <Button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            className="h-8 bg-gold/10 hover:bg-gold/20 text-gold border border-gold/20 text-xs rounded-lg"
-            data-ocid="admin.product.upload_button"
-          >
-            <ImageIcon size={12} className="mr-1" />
-            {form.imageDataUrl ? "Change Image" : "Upload Image"}
-          </Button>
-          <p className="text-[#505050] text-[10px] mt-1">JPG, PNG, WebP</p>
           <input
-            ref={fileRef}
             type="file"
             accept="image/*"
             className="hidden"
-            onChange={handleImage}
+            onChange={handleImageChange}
           />
-        </div>
+        </label>
+
+        {/* Clear button */}
+        {form.imageUrl && (
+          <button
+            type="button"
+            onClick={() => setForm((p) => ({ ...p, imageUrl: "" }))}
+            className="text-xs text-red-400 hover:text-red-300 underline underline-offset-2"
+            data-ocid="admin.product_image.delete_button"
+          >
+            Remove image
+          </button>
+        )}
       </div>
 
       <div className="space-y-1">
@@ -270,7 +297,7 @@ function ProductsTab() {
       name: form.name,
       description: form.description,
       price: Number.parseFloat(form.price),
-      imageDataUrl: form.imageDataUrl,
+      imageUrl: form.imageUrl,
       planType: (form.planType || "starter") as
         | "starter"
         | "silver"
@@ -286,7 +313,7 @@ function ProductsTab() {
       name: form.name,
       description: form.description,
       price: Number.parseFloat(form.price),
-      imageDataUrl: form.imageDataUrl,
+      imageUrl: form.imageUrl,
       planType: (form.planType || "starter") as
         | "starter"
         | "silver"
@@ -384,9 +411,9 @@ function ProductsTab() {
                     className="w-10 h-10 rounded-lg border border-gold/10 flex items-center justify-center overflow-hidden flex-shrink-0"
                     style={{ background: "#0A0A0A" }}
                   >
-                    {product.imageDataUrl ? (
+                    {product.imageUrl ? (
                       <img
-                        src={product.imageDataUrl}
+                        src={product.imageUrl}
                         alt={product.name}
                         className="w-full h-full object-cover"
                       />

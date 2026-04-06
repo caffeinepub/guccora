@@ -1,11 +1,4 @@
-import {
-  addDoc,
-  collection,
-  doc,
-  increment,
-  serverTimestamp,
-  updateDoc,
-} from "firebase/firestore";
+import { addDoc, collection, serverTimestamp } from "firebase/firestore";
 import { toast } from "sonner";
 import { db, isFirebaseConfigured } from "../firebase";
 
@@ -26,6 +19,8 @@ export interface RazorpayOrderOptions {
   userId: string;
   userName: string;
   phone: string;
+  /** Called after payment is confirmed successful and order saved to Firestore */
+  onSuccess?: (planAmount: number) => void;
 }
 
 export function useRazorpay() {
@@ -43,13 +38,15 @@ export function useRazorpay() {
       amount: amountInPaise,
       currency: "INR",
       name: "GUCCORA",
-      description: `${options.productName} - ${options.planType} Plan`,
+      description: options.planType
+        ? `${options.productName} - ${options.planType} Plan`
+        : options.productName,
       prefill: {
         name: options.userName,
         contact: options.phone,
       },
       theme: {
-        color: "#FFD700",
+        color: "#d4af37",
       },
       // NOTE: order_id is intentionally omitted.
       // Creating a Razorpay order requires the secret key on a backend server.
@@ -64,7 +61,7 @@ export function useRazorpay() {
 
         try {
           if (isFirebaseConfigured) {
-            // 1. Save order to Firestore
+            // Save order to Firestore with status "pending" for admin approval
             await addDoc(collection(db, "orders"), {
               userId: options.userId,
               userName: options.userName,
@@ -79,46 +76,24 @@ export function useRazorpay() {
               razorpayPaymentId: paymentId,
               createdAt: serverTimestamp(),
             });
-
-            // 2. Update user wallet in Firestore
-            if (options.userId) {
-              await updateDoc(doc(db, "users", options.userId), {
-                wallet: increment(options.amount),
-              });
-            }
           }
 
-          // 3. Fallback: also save to localStorage for admin panel
-          try {
-            const existing = JSON.parse(localStorage.getItem("orders") || "[]");
-            existing.unshift({
-              id: paymentId,
-              userId: options.userId,
-              userName: options.userName,
-              phone: options.phone,
-              productName: options.productName,
-              planType: options.planType,
-              amount: options.amount,
-              status: "pending",
-              isAmountAdded: false,
-              paymentMethod: "razorpay",
-              razorpayPaymentId: paymentId,
-              date: new Date().toLocaleDateString("en-IN", {
-                day: "2-digit",
-                month: "short",
-                year: "numeric",
-              }),
-            });
-            localStorage.setItem("orders", JSON.stringify(existing));
-          } catch {
-            // ignore localStorage errors
+          // Trigger onSuccess callback (marks user as paid + credits referrer)
+          if (options.onSuccess) {
+            options.onSuccess(options.amount);
           }
 
-          toast.success("Payment successful! Your order has been placed.");
+          toast.success(
+            "Payment successful! ✅ Your order has been placed and is awaiting admin approval.",
+          );
         } catch (err) {
           console.error("Order save error after payment:", err);
-          toast.error(
-            `Payment received but order save failed. Share payment ID with support: ${paymentId}`,
+          // Still call onSuccess so user is marked paid even if order save fails
+          if (options.onSuccess) {
+            options.onSuccess(options.amount);
+          }
+          toast.warning(
+            `Payment received but order save failed. Payment ID: ${paymentId}`,
           );
         }
       },
