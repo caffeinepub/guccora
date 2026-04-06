@@ -11,6 +11,10 @@ type PlanConfig = {
   tagClass: string;
   link: string;
   commission: number;
+  image: string;
+  direct: number;
+  levelPer: number;
+  pair: number;
   features: string[];
 };
 
@@ -22,6 +26,11 @@ const PLANS: PlanConfig[] = [
     tagClass: "bg-yellow-500/15 text-yellow-400 border-yellow-500/25",
     link: "https://rzp.io/rzp/4EG1XhZz",
     commission: 40,
+    image:
+      "https://images.unsplash.com/photo-1607082348824-0a96f2a4b9da?w=600&q=80",
+    direct: 40,
+    levelPer: 5,
+    pair: 30,
     features: [
       "Direct Income: ₹40 per referral",
       "Level Income: ₹5 × 10 levels = ₹50",
@@ -35,6 +44,11 @@ const PLANS: PlanConfig[] = [
     tagClass: "bg-slate-400/15 text-slate-300 border-slate-400/25",
     link: "https://rzp.io/rzp/AIDYAnv1",
     commission: 70,
+    image:
+      "https://images.unsplash.com/photo-1607083206869-4c7672e72a8a?w=600&q=80",
+    direct: 70,
+    levelPer: 8,
+    pair: 50,
     features: [
       "Direct Income: ₹70 per referral",
       "Level Income: ₹8 × 10 levels = ₹80",
@@ -48,6 +62,11 @@ const PLANS: PlanConfig[] = [
     tagClass: "bg-amber-500/15 text-amber-400 border-amber-500/25",
     link: "https://rzp.io/rzp/rdiKuwK",
     commission: 140,
+    image:
+      "https://images.unsplash.com/photo-1607082349566-187342175e2f?w=600&q=80",
+    direct: 140,
+    levelPer: 16,
+    pair: 100,
     features: [
       "Direct Income: ₹140 per referral",
       "Level Income: ₹16 × 10 levels = ₹160",
@@ -61,6 +80,11 @@ const PLANS: PlanConfig[] = [
     tagClass: "bg-gold/15 text-gold border-gold/25",
     link: "https://rzp.io/rzp/eKYODKB",
     commission: 210,
+    image:
+      "https://images.unsplash.com/photo-1607082349567-0fdb7a5cbb6b?w=600&q=80",
+    direct: 210,
+    levelPer: 24,
+    pair: 150,
     features: [
       "Direct Income: ₹210 per referral",
       "Level Income: ₹24 × 10 levels = ₹240",
@@ -129,14 +153,14 @@ export function ProductsPage() {
       )}
 
       {/* Plan Cards */}
-      <div className="space-y-4">
+      <div className="space-y-5">
         {PLANS.map((plan) => {
           const isActive = activePlan === plan.amount;
           const isConfirming = confirmingPlan === plan.amount;
           return (
             <div
               key={plan.amount}
-              className={`rounded-2xl border p-5 relative overflow-hidden transition-all ${
+              className={`rounded-[12px] border overflow-hidden transition-all ${
                 isActive
                   ? "border-green-500/30"
                   : plan.amount === 2999
@@ -148,102 +172,164 @@ export function ProductsPage() {
                   plan.amount === 2999
                     ? "linear-gradient(135deg, #141414 0%, #1a1200 100%)"
                     : "#141414",
+                boxShadow: "0 4px 24px rgba(0,0,0,0.5)",
               }}
               data-ocid={`plans.plan_${plan.amount}.card`}
             >
-              {/* Gold glow for ₹2999 */}
-              {plan.amount === 2999 && (
-                <div
-                  className="absolute right-0 top-0 w-32 h-32 rounded-full opacity-10 pointer-events-none"
+              {/* Plan Image */}
+              <div
+                style={{
+                  height: 150,
+                  overflow: "hidden",
+                  position: "relative",
+                }}
+              >
+                <img
+                  src={plan.image}
+                  alt={plan.label}
                   style={{
-                    background:
-                      "radial-gradient(circle, #FFD700 0%, transparent 70%)",
-                    transform: "translate(30%, -30%)",
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "cover",
+                    display: "block",
+                  }}
+                  loading="lazy"
+                />
+                {/* Gradient overlay for seamless blend */}
+                <div
+                  style={{
+                    position: "absolute",
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
+                    height: 48,
+                    background: `linear-gradient(to bottom, transparent, ${
+                      plan.amount === 2999 ? "#141414" : "#141414"
+                    })`,
                   }}
                 />
-              )}
+                {/* Tag badge on image */}
+                <span
+                  className={`absolute top-3 left-3 text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wide backdrop-blur-sm ${
+                    plan.tagClass
+                  }`}
+                  style={{ background: "rgba(0,0,0,0.55)" }}
+                >
+                  {plan.tag}
+                </span>
+                {isActive && (
+                  <span className="absolute top-3 right-3 text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-500/80 text-white border border-green-400/30 backdrop-blur-sm">
+                    ✓ ACTIVE
+                  </span>
+                )}
+              </div>
 
-              <div className="flex items-start justify-between mb-3">
-                <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <span
-                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wide ${
-                        plan.tagClass
-                      }`}
-                    >
-                      {plan.tag}
-                    </span>
-                    {isActive && (
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/20">
-                        ✓ ACTIVE
-                      </span>
-                    )}
-                  </div>
+              {/* Card Body */}
+              <div className="p-5">
+                {/* Plan name + price */}
+                <div className="flex items-center justify-between mb-3">
                   <h2 className="text-white font-black text-xl">
                     {plan.label}
                   </h2>
-                </div>
-                <span className="text-gold font-black text-2xl font-display">
-                  ₹{plan.amount.toLocaleString("en-IN")}
-                </span>
-              </div>
-
-              {/* Features */}
-              <ul className="space-y-1 mb-4">
-                {plan.features.map((f) => (
-                  <li
-                    key={f}
-                    className="flex items-center gap-2 text-xs text-[#909090]"
-                  >
-                    <span className="w-1.5 h-1.5 rounded-full bg-gold/60 flex-shrink-0" />
-                    {f}
-                  </li>
-                ))}
-              </ul>
-
-              {isActive ? (
-                <div className="flex items-center justify-center gap-2 h-11 rounded-xl border border-green-500/20 bg-green-500/10">
-                  <CheckCircle size={15} className="text-green-400" />
-                  <span className="text-green-400 font-bold text-sm">
-                    Plan Active
+                  <span className="text-gold font-black text-2xl font-display">
+                    ₹{plan.amount.toLocaleString("en-IN")}
                   </span>
                 </div>
-              ) : currentUser ? (
-                <div className="space-y-2">
+
+                {/* Income details row */}
+                <div className="grid grid-cols-3 gap-2 mb-4">
+                  <div
+                    className="rounded-xl p-2.5 text-center"
+                    style={{
+                      background: "rgba(255,215,0,0.06)",
+                      border: "1px solid rgba(255,215,0,0.12)",
+                    }}
+                  >
+                    <p className="text-[#808080] text-[10px] uppercase tracking-wide mb-0.5">
+                      Direct
+                    </p>
+                    <p className="text-gold font-bold text-sm">
+                      ₹{plan.direct}
+                    </p>
+                  </div>
+                  <div
+                    className="rounded-xl p-2.5 text-center"
+                    style={{
+                      background: "rgba(255,215,0,0.06)",
+                      border: "1px solid rgba(255,215,0,0.12)",
+                    }}
+                  >
+                    <p className="text-[#808080] text-[10px] uppercase tracking-wide mb-0.5">
+                      Level
+                    </p>
+                    <p className="text-gold font-bold text-sm">
+                      ₹{plan.levelPer}×10
+                    </p>
+                  </div>
+                  <div
+                    className="rounded-xl p-2.5 text-center"
+                    style={{
+                      background: "rgba(255,215,0,0.06)",
+                      border: "1px solid rgba(255,215,0,0.12)",
+                    }}
+                  >
+                    <p className="text-[#808080] text-[10px] uppercase tracking-wide mb-0.5">
+                      Pair
+                    </p>
+                    <p className="text-gold font-bold text-sm">₹{plan.pair}</p>
+                  </div>
+                </div>
+
+                {/* Level income total note */}
+                <p className="text-[#505050] text-xs mb-4">
+                  Level total: ₹{plan.levelPer} × 10 = ₹{plan.levelPer * 10}
+                </p>
+
+                {/* Action buttons */}
+                {isActive ? (
+                  <div className="flex items-center justify-center gap-2 h-11 rounded-xl border border-green-500/20 bg-green-500/10">
+                    <CheckCircle size={15} className="text-green-400" />
+                    <span className="text-green-400 font-bold text-sm">
+                      Plan Active
+                    </span>
+                  </div>
+                ) : currentUser ? (
+                  <div className="space-y-2">
+                    <Button
+                      onClick={() => handleJoin(plan)}
+                      className="w-full bg-gold hover:bg-gold-light text-black font-black h-11 rounded-xl text-sm flex items-center justify-center gap-2"
+                      data-ocid={`plans.plan_${plan.amount}.join_button`}
+                    >
+                      <CreditCard size={15} />
+                      Join {plan.label} — Pay Now
+                    </Button>
+                    <button
+                      type="button"
+                      onClick={() => handleConfirmPayment(plan)}
+                      disabled={isConfirming}
+                      className="w-full text-center text-[#808080] hover:text-gold text-xs py-2 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
+                      data-ocid={`plans.plan_${plan.amount}.confirm_button`}
+                    >
+                      {isConfirming ? (
+                        <>
+                          <Loader2 size={12} className="animate-spin" />
+                          Confirming...
+                        </>
+                      ) : (
+                        "I've already paid — confirm payment"
+                      )}
+                    </button>
+                  </div>
+                ) : (
                   <Button
                     onClick={() => handleJoin(plan)}
                     className="w-full bg-gold hover:bg-gold-light text-black font-black h-11 rounded-xl text-sm flex items-center justify-center gap-2"
-                    data-ocid={`plans.plan_${plan.amount}.join_button`}
                   >
                     <CreditCard size={15} />
-                    Join {plan.label} — Pay Now
+                    Join {plan.label}
                   </Button>
-                  <button
-                    type="button"
-                    onClick={() => handleConfirmPayment(plan)}
-                    disabled={isConfirming}
-                    className="w-full text-center text-[#808080] hover:text-gold text-xs py-2 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
-                    data-ocid={`plans.plan_${plan.amount}.confirm_button`}
-                  >
-                    {isConfirming ? (
-                      <>
-                        <Loader2 size={12} className="animate-spin" />
-                        Confirming...
-                      </>
-                    ) : (
-                      "I've already paid — confirm payment"
-                    )}
-                  </button>
-                </div>
-              ) : (
-                <Button
-                  onClick={() => handleJoin(plan)}
-                  className="w-full bg-gold hover:bg-gold-light text-black font-black h-11 rounded-xl text-sm flex items-center justify-center gap-2"
-                >
-                  <CreditCard size={15} />
-                  Join {plan.label}
-                </Button>
-              )}
+                )}
+              </div>
             </div>
           );
         })}
