@@ -29,7 +29,6 @@ function loadRazorpayScript(): Promise<void> {
       'script[src*="checkout.razorpay.com"]',
     );
     if (existing) {
-      // Script tag exists but Razorpay object not yet available — wait for load
       existing.addEventListener("load", () => resolve());
       existing.addEventListener("error", () =>
         reject(new Error("Razorpay script load error")),
@@ -45,6 +44,16 @@ function loadRazorpayScript(): Promise<void> {
   });
 }
 
+/** Disable body scroll when Razorpay popup opens */
+function lockScroll() {
+  document.body.style.overflow = "hidden";
+}
+
+/** Restore body scroll when Razorpay popup closes */
+function unlockScroll() {
+  document.body.style.overflow = "auto";
+}
+
 export function useRazorpay() {
   async function openRazorpay(options: RazorpayOrderOptions) {
     console.log(
@@ -52,6 +61,16 @@ export function useRazorpay() {
       options.productName,
       `₹${options.amount}`,
     );
+
+    // ✅ IFRAME CHECK — If running inside an iframe (e.g. Caffeine preview),
+    // open the app in a new tab so Razorpay runs in the top-level window.
+    if (window.top !== window.self) {
+      console.log(
+        "[Razorpay] Detected iframe environment — opening app in new tab",
+      );
+      window.open(window.location.href, "_blank");
+      return;
+    }
 
     // Ensure script is loaded before opening popup
     try {
@@ -89,6 +108,9 @@ export function useRazorpay() {
           response.razorpay_payment_id,
         );
 
+        // Restore scroll immediately on success
+        unlockScroll();
+
         // Store locally
         localStorage.setItem(
           "plan",
@@ -108,8 +130,10 @@ export function useRazorpay() {
         contact: options.phone || "",
       },
       modal: {
+        // Restore scroll whenever the modal is dismissed (close button, back, etc.)
         ondismiss: () => {
           console.log("[Razorpay] Modal dismissed by user");
+          unlockScroll();
         },
         escape: true,
         animation: true,
@@ -141,12 +165,18 @@ export function useRazorpay() {
       console.error("[Razorpay] Error reason:", resp?.error?.reason);
       console.error("[Razorpay] Metadata:", resp?.error?.metadata);
 
+      // Restore scroll on payment failure too — no UI freeze
+      unlockScroll();
+
       const reason =
         resp?.error?.description ||
         resp?.error?.reason ||
         "Payment failed. Please try again.";
       alert(`Payment failed: ${reason}`);
     });
+
+    // Lock scroll just before opening the popup
+    lockScroll();
 
     rzp.open();
     console.log("[Razorpay] rzp.open() called — popup should be visible");

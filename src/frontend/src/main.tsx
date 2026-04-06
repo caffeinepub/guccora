@@ -4,6 +4,11 @@ import App from "./App";
 import { InternetIdentityProvider } from "./hooks/useInternetIdentity";
 import "./index.css";
 
+// Force app out of iframe so Razorpay can run in a full browser window
+if (window.top !== window.self) {
+  window.top!.location.href = window.location.href;
+}
+
 BigInt.prototype.toJSON = function () {
   return this.toString();
 };
