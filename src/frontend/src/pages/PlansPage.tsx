@@ -121,6 +121,24 @@ export function ProductsPage() {
     reader.onload = async () => {
       const base64 = reader.result as string;
       submitPaymentRequest(String(product.price), utr.trim(), base64);
+
+      // Save to localStorage["payments"] so admin panel can read it
+      try {
+        const existing = JSON.parse(localStorage.getItem("payments") || "[]");
+        existing.push({
+          utr: utr.trim(),
+          screenshot: base64,
+          status: "pending",
+          plan: String(product.price),
+          userName: currentUser?.name ?? "",
+          userPhone: currentUser?.phone ?? "",
+          timestamp: Date.now(),
+        });
+        localStorage.setItem("payments", JSON.stringify(existing));
+      } catch {
+        // ignore
+      }
+
       toast.success("Payment submitted. Waiting for admin approval");
       // Clear form
       setUtrMap((prev) => ({ ...prev, [product.id]: "" }));

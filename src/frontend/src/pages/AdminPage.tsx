@@ -33,6 +33,7 @@ import { PLANS, useGuccora } from "../context/GuccoraContext";
 import { db, isFirebaseConfigured } from "../firebase";
 import { useProducts } from "../hooks/useProducts";
 import type { Product } from "../hooks/useProducts";
+import { applyFullMLMApproval } from "../utils/mlmApproval";
 import { callApproveOrder } from "../utils/mlmFunctions";
 
 type FirestoreUser = {
@@ -572,192 +573,71 @@ function OrdersTab() {
       return;
     }
     setApprovingId(orderId);
+
+    // Guard: already approved in local state
+    const existingOrder = orders.find((o) => o.id === orderId);
+    if (
+      existingOrder &&
+      (existingOrder.status === "approved" || existingOrder.isAmountAdded)
+    ) {
+      toast.error("This order is already approved.");
+      setApprovingId(null);
+      return;
+    }
+
+    // Try Firebase Cloud Function first
     try {
-      // Try Firebase Cloud Function first (works when real credentials are set)
       await callApproveOrder(orderId);
       toast.success("Order approved! Income distributed securely.");
+      setOrders((prev) =>
+        prev.map((o) =>
+          o.id === orderId
+            ? { ...o, status: "approved", isAmountAdded: true }
+            : o,
+        ),
+      );
+      setApprovingId(null);
       return;
     } catch {
       // Firebase not configured — fall back to localStorage approval
     }
 
-    // ── localStorage fallback ──────────────────────────────────────────
+    // ── Full MLM localStorage approval ────────────────────────────────
     try {
       const raw = localStorage.getItem("orders");
       const allOrders: GlobalOrder[] = raw ? JSON.parse(raw) : [];
       const idx = allOrders.findIndex((o) => o.id === orderId);
 
-      if (idx === -1) {
+      let orderData: GlobalOrder | undefined =
+        idx >= 0 ? allOrders[idx] : existingOrder;
+      if (!orderData) {
         toast.error("Order not found in records.");
         setApprovingId(null);
         return;
       }
-
-      const order = allOrders[idx];
-
-      // Guard: already approved
-      if (order.status === "approved" || order.isAmountAdded) {
+      if (orderData.status === "approved" || orderData.isAmountAdded) {
         toast.error("This order is already approved.");
         setApprovingId(null);
         return;
       }
 
-      // Update status and flag
-      allOrders[idx] = { ...order, status: "approved", isAmountAdded: true };
-      localStorage.setItem("orders", JSON.stringify(allOrders));
+      // Apply full MLM: Direct + Level + Pair + Admin wallet + Orders
+      applyFullMLMApproval({
+        id: orderData.id,
+        name: orderData.userName,
+        phone: orderData.phone,
+        plan:
+          orderData.productName?.replace("₹", "").replace(" Plan", "") ??
+          String(orderData.amount),
+        amount: orderData.amount,
+        utr: ((orderData as Record<string, unknown>).utr as string) ?? "",
+        screenshot:
+          ((orderData as Record<string, unknown>).screenshot as string) ?? "",
+        status: "pending",
+        userId: orderData.userId,
+      });
 
-      // Credit admin wallet (once only)
-      try {
-        const adminWalletRaw = localStorage.getItem("guccora_admin_wallet");
-        const adminWallet = adminWalletRaw
-          ? JSON.parse(adminWalletRaw)
-          : { balance: 0, history: [] };
-        adminWallet.balance = (adminWallet.balance || 0) + order.amount;
-        adminWallet.history = [
-          { orderId, amount: order.amount, date: new Date().toISOString() },
-          ...(adminWallet.history || []),
-        ];
-        localStorage.setItem(
-          "guccora_admin_wallet",
-          JSON.stringify(adminWallet),
-        );
-      } catch {
-        // wallet update non-critical
-      }
-
-      // ── MLM income distribution (localStorage fallback) ──────────────────
-      try {
-        type FullUser = {
-          id: string;
-          name?: string;
-          phone?: string;
-          wallet?: number;
-          sponsorId?: string | null;
-          position?: string | null;
-          isActive?: boolean;
-          userStatus?: "active" | "inactive" | "hold";
-          planStatus?: string;
-          directIncome?: number;
-          levelIncome?: number;
-          pairIncome?: number;
-          leftCount?: number;
-          rightCount?: number;
-          referralCode?: string;
-          leftChild?: string | null;
-          rightChild?: string | null;
-        };
-
-        const allUsers: FullUser[] = JSON.parse(
-          localStorage.getItem("users") || "[]",
-        );
-
-        const updateUserInStorage = (
-          userId: string,
-          updates: Partial<FullUser>,
-        ) => {
-          const idx = allUsers.findIndex(
-            (u) => u.id === userId || u.phone === userId,
-          );
-          if (idx !== -1) {
-            allUsers[idx] = { ...allUsers[idx], ...updates };
-          }
-        };
-
-        // 1. Activate the buyer
-        const buyer = allUsers.find(
-          (u) => u.id === order.userId || u.phone === order.phone,
-        );
-        if (buyer) {
-          updateUserInStorage(buyer.id, {
-            isActive: true,
-            userStatus: "active",
-            planStatus: "active",
-          });
-        }
-
-        // 2. MLM income amounts — derive from plan based on order amount
-        const matchedPlan = PLANS.find(
-          (p) =>
-            p.price === order.amount ||
-            String(p.price) === String(order.amount),
-        );
-        const directAmt = matchedPlan?.directIncome ?? 40;
-        const levelAmt = matchedPlan?.levelIncome ?? 5;
-        const pairAmt = matchedPlan?.pairIncome ?? 3;
-
-        // 3. Direct income to sponsor
-        if (buyer?.sponsorId) {
-          const sponsor = allUsers.find(
-            (u) =>
-              u.id === buyer.sponsorId || u.referralCode === buyer.sponsorId,
-          );
-          if (sponsor) {
-            updateUserInStorage(sponsor.id, {
-              wallet: (sponsor.wallet || 0) + directAmt,
-              directIncome: (sponsor.directIncome || 0) + directAmt,
-            });
-          }
-        }
-
-        // 4. Level income — walk up 10 levels from buyer's sponsor
-        let currentId: string | null | undefined = buyer?.sponsorId;
-        let level = 0;
-        while (currentId && level < 10) {
-          const upline = allUsers.find(
-            (u) => u.id === currentId || u.referralCode === currentId,
-          );
-          if (!upline) break;
-          updateUserInStorage(upline.id, {
-            wallet: (upline.wallet || 0) + levelAmt,
-            levelIncome: (upline.levelIncome || 0) + levelAmt,
-          });
-          currentId = upline.sponsorId ?? null;
-          level++;
-        }
-
-        // 5. Pair income — walk up 10 levels, credit ₹3 per matched pair
-        currentId = buyer?.sponsorId;
-        level = 0;
-        while (currentId && level < 10) {
-          const upline = allUsers.find(
-            (u) => u.id === currentId || u.referralCode === currentId,
-          );
-          if (!upline) break;
-          const leftCount = upline.leftCount || 0;
-          const rightCount = upline.rightCount || 0;
-          const newLeftCount =
-            buyer?.position === "left" ? leftCount + 1 : leftCount;
-          const newRightCount =
-            buyer?.position === "right" ? rightCount + 1 : rightCount;
-          const pairs = Math.min(newLeftCount, newRightCount);
-          const prevPairs = Math.min(leftCount, rightCount);
-          if (pairs > prevPairs) {
-            updateUserInStorage(upline.id, {
-              wallet: (upline.wallet || 0) + pairAmt,
-              pairIncome: (upline.pairIncome || 0) + pairAmt,
-              leftCount: newLeftCount,
-              rightCount: newRightCount,
-            });
-          } else {
-            updateUserInStorage(upline.id, {
-              leftCount: newLeftCount,
-              rightCount: newRightCount,
-            });
-          }
-          currentId = upline.sponsorId ?? null;
-          level++;
-        }
-
-        // Save all user updates at once
-        localStorage.setItem("users", JSON.stringify(allUsers));
-      } catch (incomeErr) {
-        console.warn(
-          "MLM income distribution error (non-critical):",
-          incomeErr,
-        );
-      }
-
-      // Update local state immediately — no reload needed
+      // Update local state immediately
       setOrders((prev) =>
         prev.map((o) =>
           o.id === orderId
@@ -766,9 +646,7 @@ function OrdersTab() {
         ),
       );
 
-      toast.success(
-        "Order approved! Income distributed to sponsor and upline.",
-      );
+      toast.success("✅ Full MLM Applied: Direct + Level + Pair + Order Added");
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Approval failed. Try again.";
@@ -1177,16 +1055,116 @@ export function AdminPage() {
   const [rejectReason, setRejectReason] = useState("");
   const [allPaymentRequests, setAllPaymentRequests] = useState<any[]>([]);
 
-  // Fetch all payment requests from Firestore so admin sees ALL users
+  // Load payments from localStorage["payments"] key
+  function loadLocalStoragePayments(): any[] {
+    try {
+      return JSON.parse(localStorage.getItem("payments") || "[]");
+    } catch {
+      return [];
+    }
+  }
+
+  // Fetch payment requests: localStorage (primary) + Firestore (secondary)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: isAdmin is the only relevant dep
   useEffect(() => {
     if (!isAdmin) return;
+
+    // Load localStorage payments immediately
+    const localPayments = loadLocalStoragePayments().map(
+      (p: any, i: number) => ({
+        id: p.id || `local_${i}_${p.timestamp || Date.now()}`,
+        upiRef: p.utr,
+        screenshotUrl: p.screenshot,
+        status: p.status,
+        plan: p.plan,
+        planId: p.plan,
+        userName: p.userName || "User",
+        userPhone: p.userPhone || "",
+        timestamp: p.timestamp || 0,
+        _source: "local",
+        _localIndex: i,
+      }),
+    );
+    setAllPaymentRequests(localPayments);
+
+    // Also listen to Firestore and merge
     const unsub = onSnapshot(collection(db, "paymentRequests"), (snap) => {
-      setAllPaymentRequests(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      const firestorePayments = snap.docs.map((d) => ({
+        id: d.id,
+        ...d.data(),
+        _source: "firestore",
+      }));
+      // Merge: Firestore records first, then local-only records
+      const firestoreIds = new Set(firestorePayments.map((r: any) => r.id));
+      const localOnly = loadLocalStoragePayments()
+        .map((p: any, i: number) => ({
+          id: p.id || `local_${i}_${p.timestamp || Date.now()}`,
+          upiRef: p.utr,
+          screenshotUrl: p.screenshot,
+          status: p.status,
+          plan: p.plan,
+          planId: p.plan,
+          userName: p.userName || "User",
+          userPhone: p.userPhone || "",
+          timestamp: p.timestamp || 0,
+          _source: "local",
+          _localIndex: i,
+        }))
+        .filter((r: any) => !firestoreIds.has(r.id));
+      setAllPaymentRequests([...firestorePayments, ...localOnly]);
     });
     return () => unsub();
   }, [isAdmin]);
 
+  function updateLocalPaymentStatus(req: any, newStatus: string) {
+    try {
+      const payments = JSON.parse(localStorage.getItem("payments") || "[]");
+      // match by index if available, else by utr
+      let updated = false;
+      if (typeof req._localIndex === "number" && payments[req._localIndex]) {
+        payments[req._localIndex].status = newStatus;
+        updated = true;
+      } else {
+        for (let i = 0; i < payments.length; i++) {
+          if (payments[i].utr === req.upiRef) {
+            payments[i].status = newStatus;
+            updated = true;
+            break;
+          }
+        }
+      }
+      if (updated) localStorage.setItem("payments", JSON.stringify(payments));
+    } catch {
+      // ignore
+    }
+  }
+
   async function handleApproveFirestorePayment(req: any) {
+    // Apply full MLM: Direct + Level + Pair + Admin wallet + Orders + Activate user
+    applyFullMLMApproval({
+      id: req.id ?? String(Date.now()),
+      name: req.userName ?? req.name ?? "User",
+      phone: req.userPhone ?? req.phone ?? "",
+      plan: String(req.planId ?? req.plan ?? ""),
+      amount: Number(req.planId ?? req.plan ?? req.amount ?? 0),
+      utr: req.upiRef ?? req.utr ?? "",
+      screenshot: req.screenshotUrl ?? req.screenshot ?? "",
+      status: "pending",
+      userId: req.userId ?? "",
+    });
+
+    // Update payment status in localStorage["payments"]
+    updateLocalPaymentStatus(req, "approved");
+
+    // Notify OrdersTab to re-read orders
+    window.dispatchEvent(new Event("storage"));
+
+    setAllPaymentRequests((prev) =>
+      prev.map((r) => (r.id === req.id ? { ...r, status: "approved" } : r)),
+    );
+    toast.success("✅ Full MLM Applied: Direct + Level + Pair + Order Added");
+
+    // Also update Firestore if configured (non-blocking)
     try {
       await setDoc(
         doc(db, "paymentRequests", req.id),
@@ -1206,28 +1184,27 @@ export function AdminPage() {
           { merge: true },
         );
       }
-      setAllPaymentRequests((prev) =>
-        prev.map((r) => (r.id === req.id ? { ...r, status: "approved" } : r)),
-      );
-      toast.success("Payment approved — plan activated!");
     } catch {
-      toast.error("Failed to approve. Try again.");
+      // Firestore update failed but localStorage is already updated
     }
   }
 
   async function handleRejectFirestorePayment(req: any) {
+    // Always update localStorage["payments"] so same-browser user sees the result
+    updateLocalPaymentStatus(req, "rejected");
+    setAllPaymentRequests((prev) =>
+      prev.map((r) => (r.id === req.id ? { ...r, status: "rejected" } : r)),
+    );
+    toast.success("Payment rejected");
+
     try {
       await setDoc(
         doc(db, "paymentRequests", req.id),
         { status: "rejected" },
         { merge: true },
       );
-      setAllPaymentRequests((prev) =>
-        prev.map((r) => (r.id === req.id ? { ...r, status: "rejected" } : r)),
-      );
-      toast.success("Payment rejected");
     } catch {
-      toast.error("Failed to reject. Try again.");
+      // Firestore update failed but localStorage is already updated
     }
   }
 
@@ -1260,6 +1237,13 @@ export function AdminPage() {
 
   const adminWalletBalance = (() => {
     try {
+      // Primary: simple number stored as adminWallet
+      const simple = localStorage.getItem("adminWallet");
+      if (simple) {
+        const n = JSON.parse(simple) as number;
+        if (typeof n === "number") return n;
+      }
+      // Fallback: object-style guccora_admin_wallet
       const stored = localStorage.getItem("guccora_admin_wallet");
       if (stored) {
         const w = JSON.parse(stored) as { balance: number };
