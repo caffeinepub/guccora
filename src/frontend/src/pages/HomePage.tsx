@@ -2,10 +2,12 @@ import { Button } from "@/components/ui/button";
 import { Shield, TrendingUp, Users, Zap } from "lucide-react";
 import { GLogo } from "../components/GLogo";
 import { PLANS } from "../context/GuccoraContext";
-import { useInternetIdentity } from "../hooks/useInternetIdentity";
 
 export function HomePage() {
-  const { login, isLoggingIn } = useInternetIdentity();
+  const isLoggingIn = false;
+  function login() {
+    window.location.hash = "#login";
+  }
 
   return (
     <div

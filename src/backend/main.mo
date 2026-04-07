@@ -1,9 +1,9 @@
 import Map "mo:core/Map";
 import Principal "mo:core/Principal";
 import Runtime "mo:core/Runtime";
-import MixinStorage "blob-storage/Mixin";
-import MixinAuthorization "authorization/MixinAuthorization";
-import AccessControl "authorization/access-control";
+import MixinObjectStorage "mo:caffeineai-object-storage/Mixin";
+import MixinAuthorization "mo:caffeineai-authorization/MixinAuthorization";
+import AccessControl "mo:caffeineai-authorization/access-control";
 
 actor {
   // Access Control State
@@ -11,7 +11,7 @@ actor {
   include MixinAuthorization(accessControlState);
 
   // Blob and file storage
-  include MixinStorage();
+  include MixinObjectStorage();
 
   // User profile storage
   public type UserProfile = {

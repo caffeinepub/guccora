@@ -6,11 +6,15 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { GLogo } from "../components/GLogo";
 import { useGuccora } from "../context/GuccoraContext";
-import { useActor } from "../hooks/useActor";
 
 export function ProfileSetupPage() {
   const { updateProfile } = useGuccora();
-  const { actor } = useActor();
+  const actor = null as unknown as null | {
+    saveCallerUserProfile: (p: {
+      name: string;
+      phone: string;
+    }) => Promise<void>;
+  };
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [referralCode, setReferralCode] = useState("");
