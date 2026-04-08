@@ -22,18 +22,17 @@ export type Product = {
 };
 
 export function useProducts() {
-  // Start with empty array — Firestore is the only source of truth
+  // Firestore is the ONLY source of truth — no localStorage dependency
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Always connect to Firestore — db is always initialized with real config
     const q = query(collection(db, "products"), orderBy("createdAt", "desc"));
 
     const unsub = onSnapshot(
       q,
       (snapshot) => {
-        // Map ALL docs in the snapshot — Firestore sends the FULL collection every time
+        // Firestore onSnapshot always delivers the FULL collection
         const firestoreProducts: Product[] = snapshot.docs.map(
           (docSnap) =>
             ({
@@ -53,19 +52,17 @@ export function useProducts() {
           })),
         );
 
-        // Replace state completely — never merge, never append manually.
-        // Firestore's onSnapshot always delivers the full current collection.
         setProducts(firestoreProducts);
         setLoading(false);
 
-        // Keep localStorage in sync as a fallback for unauthenticated reads
+        // Keep localStorage in sync as a readonly fallback cache
         try {
           localStorage.setItem(
             "guccora_products",
             JSON.stringify(firestoreProducts),
           );
         } catch {
-          // ignore storage errors (quota, private browsing)
+          // ignore storage errors
         }
       },
       (err) => {
@@ -79,13 +76,9 @@ export function useProducts() {
 
   const addProduct = useCallback(
     async (data: Omit<Product, "id" | "createdAt">) => {
-      // Date.now() instead of serverTimestamp() so the value is immediately
-      // available and orderBy("createdAt") works from the very first snapshot.
+      // Date.now() instead of serverTimestamp() so orderBy("createdAt") works immediately
       const createdAt = Date.now();
-
       try {
-        // addDoc() ALWAYS creates a brand-new document with a unique auto-generated ID.
-        // It NEVER overwrites an existing document — each call = one new product.
         const docRef = await addDoc(collection(db, "products"), {
           name: data.name,
           description: data.description,
@@ -95,7 +88,6 @@ export function useProducts() {
           createdAt,
         });
         console.log("[useProducts] addDoc success, new ID:", docRef.id);
-        // onSnapshot above will fire automatically and update products state
       } catch (err) {
         console.error("[useProducts] addDoc failed:", err);
         throw err;
@@ -108,7 +100,6 @@ export function useProducts() {
     async (id: string, data: Partial<Omit<Product, "id" | "createdAt">>) => {
       try {
         await updateDoc(doc(db, "products", id), data);
-        // onSnapshot will update state automatically
       } catch (err) {
         console.error("[useProducts] updateDoc failed:", err);
         throw err;
@@ -120,7 +111,6 @@ export function useProducts() {
   const deleteProduct = useCallback(async (id: string) => {
     try {
       await deleteDoc(doc(db, "products", id));
-      // onSnapshot will remove it from state automatically
     } catch (err) {
       console.error("[useProducts] deleteDoc failed:", err);
       throw err;

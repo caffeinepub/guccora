@@ -1,10 +1,10 @@
 /**
- * firestorePayments.ts
+ * firestorePayments.ts — v2 FORCED REBUILD
  *
  * Central helper for the "payments" Firestore collection.
- * All data is stored in Firestore — no localStorage.
+ * All data stored in Firestore — NO localStorage.
  *
- * INCOME RULES (FIXED RUPEE amounts, NOT credited to purchasing user):
+ * INCOME RULES (FIXED RUPEE amounts, NEVER credited to purchasing user):
  *   planAmount | Direct | Level (per lvl × 10) | Pair | Max payout
  *   599        | ₹40    | ₹5                   | ₹30  | ₹120
  *   999        | ₹70    | ₹8                   | ₹50  | ₹200
@@ -13,10 +13,10 @@
  *
  * On approval:
  *  1. Full planAmount → adminWallet ("adminWallet/main" balance)
- *  2. Direct income → sponsor only
- *  3. Level income  → upline chain (10 levels) only
- *  4. Pair income   → sponsor when directCount becomes even
- *  5. Purchasing user: ONLY isActive/paidUser/planId/planActive/status — NO wallet increment
+ *  2. Direct income  → sponsor only
+ *  3. Level income   → upline chain (10 levels) only
+ *  4. Pair income    → sponsor when directCount becomes even
+ *  5. Purchasing user: isActive/paidUser/planId/planActive — NO wallet increment
  */
 
 import {
@@ -33,8 +33,6 @@ import {
   writeBatch,
 } from "firebase/firestore";
 import { db } from "../firebase";
-
-// ── Plan income rates ────────────────────────────────────────────────────────
 
 type PlanRate = {
   direct: number;
@@ -63,24 +61,21 @@ function getRates(planAmount: number): PlanRate {
 }
 
 /**
- * Strict validation guard — ensures no single wallet increment equals the
- * full planAmount, and total payout stays within plan limits.
+ * guardWalletIncrement: block any increment equal to full plan price.
  */
-function validatePayout(
+function guardWalletIncrement(
   incrementAmount: number,
   planAmount: number,
   label: string,
 ): boolean {
-  if (incrementAmount === planAmount) {
+  if (incrementAmount === planAmount && planAmount > 0) {
     console.error(
-      `[firestorePayments] BLOCKED: ${label} increment (${incrementAmount}) equals planAmount (${planAmount}). Purchasing user must not receive full plan price.`,
+      `[firestorePayments] BLOCKED: ${label} increment (₹${incrementAmount}) equals planAmount (₹${planAmount}). Purchasing user must NEVER receive the full plan price.`,
     );
     return false;
   }
   return true;
 }
-
-// ── Public types ─────────────────────────────────────────────────────────────
 
 export type FirestorePayment = {
   id: string;
@@ -94,10 +89,8 @@ export type FirestorePayment = {
   createdAt: number;
 };
 
-// ── Save payment ─────────────────────────────────────────────────────────────
-
 /**
- * Save a new payment to the "payments" Firestore collection.
+ * savePaymentToFirestore — save a new payment to the "payments" collection.
  */
 export async function savePaymentToFirestore(params: {
   userId: string;
@@ -109,10 +102,10 @@ export async function savePaymentToFirestore(params: {
 }): Promise<{ success: boolean; docId?: string; error?: string }> {
   try {
     const docRef = await addDoc(collection(db, "payments"), {
-      userId: params.userId,
+      userId: params.userId || params.phone || "",
       name: params.name,
       phone: params.phone,
-      planAmount: params.planAmount,
+      planAmount: Number(params.planAmount),
       UTR: params.UTR,
       screenshot: params.screenshot,
       status: "pending",
@@ -124,14 +117,19 @@ export async function savePaymentToFirestore(params: {
   }
 }
 
-// ── Approve payment ──────────────────────────────────────────────────────────
-
 /**
- * Approve a payment:
- *  1. Mark payment "approved"
- *  2. Credit planAmount to adminWallet
- *  3. Activate purchasing user (isActive/paidUser/planId) — NO wallet change
- *  4. Distribute commissions to sponsor + upline ONLY
+ * approveFirestorePayment — approve a payment and distribute MLM commissions.
+ *
+ * Steps:
+ *  1. Fetch and validate payment document
+ *  2. Find purchasing user by userId / phone fallback
+ *  3. Mark payment "approved"
+ *  4. Credit full planAmount to adminWallet/main
+ *  5. Activate purchasing user (isActive, paidUser, planId) — NO wallet change
+ *  6. Direct income → sponsor (referredBy chain)
+ *  7. Level income → 10 upline levels
+ *  8. Pair income → sponsor on even directCount
+ *  9. Commit all writes atomically via writeBatch
  */
 export async function approveFirestorePayment(paymentDocId: string): Promise<{
   success: boolean;
@@ -148,7 +146,6 @@ export async function approveFirestorePayment(paymentDocId: string): Promise<{
 
     const paymentData = paymentSnap.data();
 
-    // Duplicate protection
     if (paymentData.status === "approved") {
       return { success: false, error: "Already approved" };
     }
@@ -164,9 +161,8 @@ export async function approveFirestorePayment(paymentDocId: string): Promise<{
 
     if (joiningUserId) {
       const snap = await getDoc(doc(db, "users", joiningUserId));
-      if (snap.exists()) {
+      if (snap.exists())
         joiningUserData = snap.data() as Record<string, unknown>;
-      }
     }
 
     // Fallback: query by phone
@@ -182,9 +178,12 @@ export async function approveFirestorePayment(paymentDocId: string): Promise<{
     const batch = writeBatch(db);
 
     // ── Step 3: Mark payment approved ────────────────────────────────────────
-    batch.update(paymentRef, { status: "approved", approvedAt: Date.now() });
+    batch.update(paymentRef, {
+      status: "approved",
+      approvedAt: Date.now(),
+    });
 
-    // ── Step 4: Credit full planAmount to adminWallet ────────────────────────
+    // ── Step 4: Credit full planAmount to adminWallet/main ───────────────────
     const adminWalletRef = doc(db, "adminWallet", "main");
     const adminSnap = await getDoc(adminWalletRef);
     if (adminSnap.exists()) {
@@ -193,7 +192,6 @@ export async function approveFirestorePayment(paymentDocId: string): Promise<{
         lastUpdated: Date.now(),
       });
     } else {
-      // Create the doc if it doesn't exist yet
       await setDoc(adminWalletRef, {
         balance: planAmount,
         lastUpdated: Date.now(),
@@ -212,11 +210,14 @@ export async function approveFirestorePayment(paymentDocId: string): Promise<{
         planId: String(planAmount),
         selectedPlan: planAmount,
         approvalApplied: true,
+        isAmountAdded: true,
       });
     }
 
     // ── Step 6: Direct income → sponsor ──────────────────────────────────────
-    const referredByCode = String(joiningUserData?.referredBy ?? "");
+    const referredByCode = String(
+      joiningUserData?.referredBy ?? joiningUserData?.sponsorId ?? "",
+    );
     let sponsorUserId: string | null = null;
     let sponsorData: Record<string, unknown> | null = null;
 
@@ -241,12 +242,9 @@ export async function approveFirestorePayment(paymentDocId: string): Promise<{
         const alreadyPaidPairs = (sponsorData.pairPaid as number) || 0;
         const newPairs = Math.max(0, pairs - alreadyPaidPairs);
         const pairCredit = newPairs * rates.pair;
-
-        // Compute total sponsor payout and validate against plan max
         const sponsorTotal = rates.direct + pairCredit;
 
-        if (!validatePayout(rates.direct, planAmount, "Direct income")) {
-          // Should never happen for valid plans, but guard anyway
+        if (!guardWalletIncrement(rates.direct, planAmount, "Direct income")) {
           return { success: false, error: "Direct income validation failed" };
         }
 
@@ -265,7 +263,6 @@ export async function approveFirestorePayment(paymentDocId: string): Promise<{
     }
 
     // ── Step 7: Level income — walk 10 upline levels ─────────────────────────
-    // Level 1 = sponsor (already updated above for directIncome; add levelIncome separately)
     let currentRefCode = referredByCode;
     let level = 1;
 
@@ -274,13 +271,9 @@ export async function approveFirestorePayment(paymentDocId: string): Promise<{
       let levelUserNextRef = "";
 
       if (level === 1 && sponsorUserId) {
-        // Sponsor already has a batch.update — append levelIncome to same doc
         levelUserId = sponsorUserId;
         levelUserNextRef = String(sponsorData?.referredBy ?? "");
-        // For sponsor at level 1, the batch.update already ran above.
-        // We need to add levelIncome on top. Firestore batch allows multiple
-        // updates to the same doc — the last one wins, so we must merge manually.
-        // Instead, patch sponsor's wallet and levelIncome here.
+        // Append levelIncome to sponsor (batch allows multiple updates to same doc)
         const sponsorRef = doc(db, "users", sponsorUserId);
         batch.update(sponsorRef, {
           levelIncome: increment(rates.levelPerLevel),
@@ -299,13 +292,15 @@ export async function approveFirestorePayment(paymentDocId: string): Promise<{
         levelUserNextRef = String(levelData.referredBy ?? "");
 
         if (
-          !validatePayout(
+          !guardWalletIncrement(
             rates.levelPerLevel,
             planAmount,
             `Level ${level} income`,
           )
         ) {
-          break;
+          currentRefCode = levelUserNextRef;
+          level++;
+          continue;
         }
 
         const levelRef = doc(db, "users", levelUserId);
@@ -319,14 +314,13 @@ export async function approveFirestorePayment(paymentDocId: string): Promise<{
       level++;
     }
 
-    // ── Step 8: Validate total payout won't exceed plan max ──────────────────
+    // ── Step 8: Validate max payout ───────────────────────────────────────────
     const maxPossiblePayout =
       rates.direct + rates.levelPerLevel * MAX_LEVELS + rates.pair;
     if (maxPossiblePayout > rates.maxPayout) {
       console.error(
-        `[firestorePayments] Payout calculation error: max possible payout ₹${maxPossiblePayout} exceeds plan limit ₹${rates.maxPayout}`,
+        `[firestorePayments] Max possible payout ₹${maxPossiblePayout} exceeds plan limit ₹${rates.maxPayout}`,
       );
-      // Still proceed — the plan rates themselves are validated at definition time
     }
 
     // ── Step 9: Commit all writes atomically ─────────────────────────────────
@@ -340,10 +334,8 @@ export async function approveFirestorePayment(paymentDocId: string): Promise<{
   }
 }
 
-// ── Reject payment ───────────────────────────────────────────────────────────
-
 /**
- * Reject a payment — set status = "rejected"
+ * rejectFirestorePayment — set status = "rejected"
  */
 export async function rejectFirestorePayment(paymentDocId: string): Promise<{
   success: boolean;

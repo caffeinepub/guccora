@@ -83,13 +83,13 @@ export function ProductsPage() {
   const { userData, currentUser, submitPaymentRequest } = useGuccora();
   const { products: firestoreProducts, loading } = useProducts();
 
-  // Per-product UTR, screenshot, and submitting state
   const [utrMap, setUtrMap] = useState<Record<string, string>>({});
   const [screenshotMap, setScreenshotMap] = useState<
     Record<string, File | null>
   >({});
   const [submittingId, setSubmittingId] = useState<string | null>(null);
 
+  // Use Firestore products; fallback to localStorage cache if Firestore hasn't loaded yet
   const products: Product[] = (() => {
     if (firestoreProducts.length > 0) return firestoreProducts;
     if (!loading) {
@@ -100,7 +100,7 @@ export function ProductsPage() {
           if (Array.isArray(parsed) && parsed.length > 0) return parsed;
         }
       } catch {
-        // ignore parse errors
+        // ignore
       }
     }
     return firestoreProducts;
@@ -122,7 +122,7 @@ export function ProductsPage() {
     reader.onload = async () => {
       const base64 = reader.result as string;
 
-      // Save to Firestore "payments" collection
+      // Save to Firestore "payments" collection (primary)
       const result = await savePaymentToFirestore({
         userId: currentUser.id || currentUser.phone || "",
         name: currentUser.name ?? "",
@@ -140,10 +140,9 @@ export function ProductsPage() {
         return;
       }
 
-      // Update local plan status so UI reflects "pending"
+      // Update local plan status to "pending"
       submitPaymentRequest(String(product.price), utr.trim(), base64);
 
-      // Clear form
       setUtrMap((prev) => ({ ...prev, [product.id]: "" }));
       setScreenshotMap((prev) => ({ ...prev, [product.id]: null }));
       setSubmittingId(null);
@@ -210,7 +209,6 @@ export function ProductsPage() {
         </div>
       </div>
 
-      {/* Loading state */}
       {loading && (
         <div
           className="flex items-center justify-center py-16"
@@ -220,7 +218,6 @@ export function ProductsPage() {
         </div>
       )}
 
-      {/* Empty state */}
       {!loading && products.length === 0 && (
         <div
           className="text-center py-16 text-[#505050]"
@@ -234,7 +231,6 @@ export function ProductsPage() {
         </div>
       )}
 
-      {/* Plan Cards */}
       {!loading && products.length > 0 && (
         <div className="space-y-5">
           {products.map((product, i) => {
@@ -243,7 +239,6 @@ export function ProductsPage() {
             const isPlatinum = product.price === 2999;
             const imageUrl = product.imageUrl || DEFAULT_IMAGE;
 
-            // Check if there's a pending payment request for this plan
             const hasPending = userData.paymentRequests.some(
               (r) =>
                 r.planId === String(product.price) && r.status === "pending",
@@ -302,9 +297,7 @@ export function ProductsPage() {
                     }}
                   />
                   <span
-                    className={`absolute top-3 left-3 text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wide backdrop-blur-sm ${
-                      income.tagClass
-                    }`}
+                    className={`absolute top-3 left-3 text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wide backdrop-blur-sm ${income.tagClass}`}
                     style={{ background: "rgba(0,0,0,0.55)" }}
                   >
                     {income.tag}
@@ -327,50 +320,27 @@ export function ProductsPage() {
                     </span>
                   </div>
 
-                  {/* Income details row */}
+                  {/* Income details */}
                   <div className="grid grid-cols-3 gap-2 mb-4">
-                    <div
-                      className="rounded-xl p-2.5 text-center"
-                      style={{
-                        background: "rgba(255,215,0,0.06)",
-                        border: "1px solid rgba(255,215,0,0.12)",
-                      }}
-                    >
-                      <p className="text-[#808080] text-[10px] uppercase tracking-wide mb-0.5">
-                        Direct
-                      </p>
-                      <p className="text-gold font-bold text-sm">
-                        ₹{income.direct}
-                      </p>
-                    </div>
-                    <div
-                      className="rounded-xl p-2.5 text-center"
-                      style={{
-                        background: "rgba(255,215,0,0.06)",
-                        border: "1px solid rgba(255,215,0,0.12)",
-                      }}
-                    >
-                      <p className="text-[#808080] text-[10px] uppercase tracking-wide mb-0.5">
-                        Level
-                      </p>
-                      <p className="text-gold font-bold text-sm">
-                        ₹{income.levelPer}×10
-                      </p>
-                    </div>
-                    <div
-                      className="rounded-xl p-2.5 text-center"
-                      style={{
-                        background: "rgba(255,215,0,0.06)",
-                        border: "1px solid rgba(255,215,0,0.12)",
-                      }}
-                    >
-                      <p className="text-[#808080] text-[10px] uppercase tracking-wide mb-0.5">
-                        Pair
-                      </p>
-                      <p className="text-gold font-bold text-sm">
-                        ₹{income.pair}
-                      </p>
-                    </div>
+                    {[
+                      { label: "Direct", value: `₹${income.direct}` },
+                      { label: "Level", value: `₹${income.levelPer}×10` },
+                      { label: "Pair", value: `₹${income.pair}` },
+                    ].map(({ label, value }) => (
+                      <div
+                        key={label}
+                        className="rounded-xl p-2.5 text-center"
+                        style={{
+                          background: "rgba(255,215,0,0.06)",
+                          border: "1px solid rgba(255,215,0,0.12)",
+                        }}
+                      >
+                        <p className="text-[#808080] text-[10px] uppercase tracking-wide mb-0.5">
+                          {label}
+                        </p>
+                        <p className="text-gold font-bold text-sm">{value}</p>
+                      </div>
+                    ))}
                   </div>
 
                   <p className="text-[#505050] text-xs mb-4">
@@ -388,7 +358,6 @@ export function ProductsPage() {
                     </div>
                   ) : (
                     <div className="space-y-2">
-                      {/* UPI Pay button */}
                       <Button
                         onClick={() => payUPI(product.price)}
                         className="w-full bg-gold hover:bg-gold-light text-black font-black h-11 rounded-xl text-sm flex items-center justify-center gap-2"
@@ -398,7 +367,6 @@ export function ProductsPage() {
                         Pay ₹{product.price} via UPI
                       </Button>
 
-                      {/* UTR + Screenshot form or pending status */}
                       {!currentUser ? (
                         <p className="text-[#505050] text-[11px] text-center py-2">
                           Login required to submit payment

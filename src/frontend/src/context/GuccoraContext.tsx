@@ -1,14 +1,21 @@
+/**
+ * GuccoraContext.tsx — v2 FORCED REBUILD
+ *
+ * State management: auth, wallet sync, user data, real-time Firestore listener.
+ * Admin phone: 6305462887, password: guccora@4348.
+ *
+ * CRITICAL: purchasing user wallet NEVER incremented on plan purchase.
+ * Only commissions go to sponsor/upline via MLM approval logic.
+ */
+
 import {
+  addDoc,
   collection,
   doc,
   getDoc,
-  getDocs,
-  increment,
   onSnapshot,
-  query,
   setDoc,
   updateDoc,
-  where,
 } from "firebase/firestore";
 import {
   type ReactNode,
@@ -203,7 +210,6 @@ export const PLANS: Plan[] = [
 const STORAGE_KEY = "guccora_v1";
 const WALLETS_KEY = "guccora_wallets";
 const CURRENT_USER_KEY = "guccora_currentUser";
-// IMPORTANT: Use canonical "users" key — consistent across all pages
 const USERS_KEY = "users";
 const ADMIN_WALLET_KEY = "guccora_admin_wallet";
 
@@ -223,15 +229,15 @@ function saveUserToUsersArray(
   updates: Record<string, unknown>,
 ) {
   try {
-    const raw = localStorage.getItem("users");
+    const raw = localStorage.getItem(USERS_KEY);
     const users: FirestoreUser[] = raw ? JSON.parse(raw) : [];
     const idx = users.findIndex((u) => u.id === userId);
     if (idx !== -1) {
-      users[idx] = { ...users[idx], ...updates };
-      localStorage.setItem("users", JSON.stringify(users));
+      users[idx] = { ...users[idx], ...updates } as FirestoreUser;
+      localStorage.setItem(USERS_KEY, JSON.stringify(users));
     }
-  } catch (e) {
-    console.error("saveUserToUsersArray error", e);
+  } catch {
+    // ignore
   }
 }
 
@@ -303,7 +309,6 @@ type GuccoraContextType = {
   updateBankDetails: (details: UserData["bankDetails"]) => void;
   saveDeliveryAddress: (address: SavedAddress) => void;
   markUserPaid: (planAmount: 599 | 999 | 1999 | 2999) => Promise<void>;
-  // Admin actions
   adminApprovePayment: (requestId: string) => void;
   adminRejectPayment: (requestId: string) => void;
   adminApproveKyc: () => void;
@@ -324,9 +329,8 @@ type GuccoraContextType = {
 const GuccoraContext = createContext<GuccoraContextType | null>(null);
 
 export function GuccoraProvider({ children }: { children: ReactNode }) {
-  // Load currentUser from localStorage on init
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(() => {
-    // Run demo-data cleanup synchronously before reading any localStorage state
+    // One-time cleanup of stale demo data
     const CLEANUP_FLAG = "guccora_cleaned_v2";
     if (!localStorage.getItem(CLEANUP_FLAG)) {
       localStorage.removeItem("orders");
@@ -334,13 +338,12 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
       localStorage.removeItem(WALLETS_KEY);
       localStorage.removeItem(STORAGE_KEY);
       localStorage.removeItem(CURRENT_USER_KEY);
-      // NOTE: Do NOT remove USERS_KEY ("users") — we want registered users to persist
       localStorage.setItem(
         ADMIN_WALLET_KEY,
         JSON.stringify({ balance: 0, history: [] }),
       );
       localStorage.setItem(CLEANUP_FLAG, "true");
-      return null; // force re-login after cleanup
+      return null;
     }
     try {
       const stored = localStorage.getItem(CURRENT_USER_KEY);
@@ -351,7 +354,6 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
     return null;
   });
 
-  // Ref to always have latest currentUser in useCallback closures
   const currentUserRef = useRef<CurrentUser | null>(null);
   currentUserRef.current = currentUser;
 
@@ -360,18 +362,13 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
         const parsed = JSON.parse(stored) as UserData;
-        // Clear any demo team members (those with principal starting with "user-")
         parsed.team = (parsed.team || []).filter(
           (m) => !m.principal.startsWith("user-"),
         );
-        // Ensure userStatus is set (backward compat with old data)
         if (!parsed.userStatus) {
           parsed.userStatus = parsed.isActive ? "active" : "inactive";
         }
-        // Ensure paidUser is set (backward compat)
-        if (parsed.paidUser === undefined) {
-          parsed.paidUser = false;
-        }
+        if (parsed.paidUser === undefined) parsed.paidUser = false;
         return parsed;
       }
     } catch {
@@ -380,7 +377,7 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
     return createEmptyData();
   });
 
-  // Sync userData name/phone from currentUser when currentUser changes
+  // Sync userData name/phone from currentUser
   useEffect(() => {
     if (currentUser && (!userData.name || !userData.phone)) {
       setUserData((prev) => ({
@@ -399,7 +396,7 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
     }
   }, [userData]);
 
-  // Sync wallet + status back to "users" array whenever they change
+  // Sync wallet + status back to "users" array
   useEffect(() => {
     if (!currentUser?.id) return;
     saveUserToUsersArray(currentUser.id, {
@@ -427,8 +424,7 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
     userData.selectedPlan,
   ]);
 
-  // ── Real-time Firestore listener for current user ─────────────────────
-  // Keeps wallet, income, isActive, paidUser in sync with Firestore after admin approval
+  // ── Real-time Firestore listener — keeps wallet/income/isActive in sync ──
   useEffect(() => {
     const userId = currentUser?.id;
     if (!userId || !isFirebaseConfigured) return;
@@ -467,23 +463,17 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
               ? (d.selectedPlan as 599 | 999 | 1999 | 2999)
               : prev.selectedPlan,
           planId:
-            typeof d.planId === "string"
-              ? (d.planId as "599" | "999" | "1999" | "2999")
-              : prev.planId,
+            typeof d.planId === "string" ? (d.planId as string) : prev.planId,
         }));
       },
       () => {
-        // Firestore listener error — ignore, keep localStorage values
+        // Firestore listener error — keep localStorage values
       },
     );
     return () => unsub();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id]);
 
-  // isProfileComplete: user is logged in
   const isProfileComplete = !!currentUser;
-
-  // Admin is determined by phone number
   const isAdmin = currentUser?.phone === ADMIN_PHONE;
 
   const login = useCallback(
@@ -494,7 +484,6 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
       const cleanPhone = phone.trim();
       const cleanPass = password.trim();
 
-      // Check hardcoded admin
       if (cleanPhone === ADMIN_PHONE && cleanPass === ADMIN_PASSWORD) {
         const adminUser: CurrentUser = {
           name: "Admin",
@@ -509,23 +498,15 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         } catch {
           // ignore
         }
-        // Set userData for admin
-        setUserData((prev) => ({
-          ...prev,
-          name: "Admin",
-          phone: ADMIN_PHONE,
-        }));
+        setUserData((prev) => ({ ...prev, name: "Admin", phone: ADMIN_PHONE }));
         return { success: true, role: "admin" };
       }
 
-      // Check registered users from canonical "users" key
       try {
         const stored = localStorage.getItem(USERS_KEY);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const users: any[] = stored ? JSON.parse(stored) : [];
+        const users: FirestoreUser[] = stored ? JSON.parse(stored) : [];
         const found = users.find(
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (u: any) => u.phone === cleanPhone && u.password === cleanPass,
+          (u) => u.phone === cleanPhone && u.password === cleanPass,
         );
         if (found) {
           const foundAsCurrentUser: CurrentUser = {
@@ -534,7 +515,9 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
             phone: found.phone,
             password: found.password,
             referralCode: found.referralCode,
-            role: found.role ?? "user",
+            role:
+              (found as FirestoreUser & { role?: "admin" | "user" }).role ??
+              "user",
           };
           setCurrentUser(foundAsCurrentUser);
           localStorage.setItem(
@@ -542,11 +525,9 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
             JSON.stringify(foundAsCurrentUser),
           );
 
-          // Resolve userStatus (may be absent in old records)
           const savedUserStatus: UserStatus =
             found.userStatus ?? (found.isActive ? "active" : "inactive");
 
-          // Restore wallet, userStatus, planStatus, paidUser from saved "users" record
           setUserData((prev) => ({
             ...prev,
             name: found.name,
@@ -574,17 +555,27 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
                 : prev.pairIncome,
             paidUser: found.paidUser === true,
             selectedPlan:
-              (found.selectedPlan ?? found.plan)
-                ? (Number(found.selectedPlan ?? found.plan) as
-                    | 599
-                    | 999
-                    | 1999
-                    | 2999)
+              (
+                found as FirestoreUser & {
+                  selectedPlan?: number;
+                  plan?: string | number;
+                }
+              ).selectedPlan ||
+              (found as FirestoreUser & { plan?: string | number }).plan
+                ? (Number(
+                    (
+                      found as FirestoreUser & {
+                        selectedPlan?: number;
+                        plan?: string | number;
+                      }
+                    ).selectedPlan ??
+                      (found as FirestoreUser & { plan?: string | number })
+                        .plan,
+                  ) as 599 | 999 | 1999 | 2999)
                 : null,
-            planActive: found.planActive === true,
           }));
 
-          // After login, silently fetch latest values from Firestore to override stale localStorage
+          // Silently pull latest values from Firestore after login
           if (isFirebaseConfigured && found.id) {
             getDoc(doc(db, "users", found.id))
               .then((snap) => {
@@ -619,7 +610,6 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
                       ? d.paidUser
                       : prev.paidUser,
                 }));
-                // Sync updated Firestore values back to localStorage users array
                 saveUserToUsersArray(found.id, {
                   wallet: d.wallet ?? found.wallet,
                   directIncome: d.directIncome ?? found.directIncome,
@@ -627,7 +617,10 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
                   pairIncome: d.pairIncome ?? found.pairIncome,
                   isActive: d.isActive ?? found.isActive,
                   userStatus: d.userStatus ?? found.userStatus,
-                  planStatus: d.planStatus ?? found.planStatus,
+                  planStatus:
+                    d.planStatus ??
+                    (found as FirestoreUser & { planStatus?: string })
+                      .planStatus,
                   paidUser: d.paidUser ?? found.paidUser,
                 });
               })
@@ -638,7 +631,9 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
 
           return {
             success: true,
-            role: found.role ?? "user",
+            role:
+              (found as FirestoreUser & { role?: "admin" | "user" }).role ??
+              "user",
           };
         }
       } catch {
@@ -651,13 +646,11 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
   );
 
   const logout = useCallback(() => {
-    // Before clearing session, sync current wallet/status back to "users" array
-    // IMPORTANT: Do NOT change userStatus on logout — only admin can change it
     if (currentUser?.id) {
       saveUserToUsersArray(currentUser.id, {
         wallet: userData.walletBalance,
         isActive: userData.isActive,
-        userStatus: userData.userStatus, // preserve admin-set status
+        userStatus: userData.userStatus,
         planStatus: userData.planStatus,
         directIncome: userData.directIncome,
         levelIncome: userData.levelIncome,
@@ -666,16 +659,12 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
       });
     }
     setCurrentUser(null);
-    // Only clear session key — do NOT remove STORAGE_KEY or "users"
-    // so userStatus, wallet, and user accounts all persist after logout
     try {
       localStorage.removeItem(CURRENT_USER_KEY);
     } catch {
       // ignore
     }
-    // Reset in-memory userData to empty for next login
-    const fresh = createEmptyData();
-    setUserData(fresh);
+    setUserData(createEmptyData());
   }, [currentUser, userData]);
 
   const register = useCallback(
@@ -697,7 +686,6 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         return { success: false, error: "Phone must be 10 digits" };
       }
 
-      // Check localStorage for duplicate phone (fast — no Firestore call)
       const stored = localStorage.getItem(USERS_KEY);
       const existingUsers: FirestoreUser[] = stored ? JSON.parse(stored) : [];
       const existing = existingUsers.find((u) => u.phone === cleanPhone);
@@ -708,16 +696,12 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         };
       }
 
-      // Generate new user id and referral code immediately (no async)
       const newId =
         Date.now().toString(36) + Math.random().toString(36).substring(2, 6);
       const newReferralCode = generateCode();
-
-      // Resolve sponsorId from local users list (no Firestore, no delay)
       const sponsorCode = referralCode?.trim() || null;
       let sponsorId: string | null = sponsorCode;
 
-      // Try to find sponsor's id from local users by referralCode
       if (sponsorCode) {
         const sponsor = existingUsers.find(
           (u) => u.referralCode === sponsorCode,
@@ -725,14 +709,13 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         if (sponsor) sponsorId = sponsor.id;
       }
 
-      // Build the full user object — saved to localStorage "users" immediately
       const newUserObj: FirestoreUser = {
         id: newId,
         name: cleanName,
         phone: cleanPhone,
         password: cleanPass,
-        sponsorId: sponsorId,
-        referredBy: sponsorCode, // the referral code used during signup
+        sponsorId,
+        referredBy: sponsorCode,
         position: position ?? "left",
         parentId: null,
         leftChild: null,
@@ -745,16 +728,14 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         rightCount: 0,
         referralCode: newReferralCode,
         isActive: false,
-        userStatus: "inactive", // Admin must activate — never auto-activate on registration
+        userStatus: "inactive",
         paidUser: false,
         createdAt: Date.now(),
       };
 
-      // Save to localStorage "users" immediately (append, never overwrite)
-      if (!existingUsers.find((u: FirestoreUser) => u.id === newId)) {
+      if (!existingUsers.find((u) => u.id === newId)) {
         existingUsers.push(newUserObj);
 
-        // Update sponsor's left/right child pointer
         if (sponsorId) {
           const sponsorIdx = existingUsers.findIndex(
             (u) => u.id === sponsorId || u.referralCode === sponsorCode,
@@ -767,7 +748,6 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
             } else if (pos === "right" && !sponsor.rightChild) {
               existingUsers[sponsorIdx] = { ...sponsor, rightChild: newId };
             }
-            // Also update parentId on new user
             const newIdx = existingUsers.findIndex((u) => u.id === newId);
             if (newIdx !== -1) {
               existingUsers[newIdx] = {
@@ -785,7 +765,7 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      // Write to Firestore if configured (with 5-second timeout to avoid blocking)
+      // Write to Firestore with 5s timeout
       if (isFirebaseConfigured) {
         try {
           await Promise.race([
@@ -795,11 +775,10 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
             ),
           ]);
         } catch {
-          // Firestore offline or timed out — localStorage save above is sufficient
+          // Offline or timed out — localStorage save is sufficient
         }
       }
 
-      // Set current user session immediately (synchronous)
       const newCurrentUser: CurrentUser = {
         id: newId,
         name: cleanName,
@@ -808,7 +787,6 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         referralCode: newReferralCode,
         role: "user",
       };
-
       setCurrentUser(newCurrentUser);
       try {
         localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(newCurrentUser));
@@ -816,7 +794,6 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         // ignore
       }
 
-      // Initialize userData — no demo data, status is inactive until admin approves
       const userDataWithProfile: UserData = {
         ...createEmptyData(),
         name: cleanName,
@@ -857,7 +834,6 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         phone,
         uplineCode: referralCode || prev.uplineCode,
       }));
-      // Also update currentUser in localStorage
       setCurrentUser((prev) => {
         if (!prev) return prev;
         const updated = { ...prev, name, phone };
@@ -872,6 +848,11 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  /**
+   * submitPaymentRequest — saves to Firestore "payments" collection AND updates local UI state.
+   * This is called by PlansPage after savePaymentToFirestore() succeeds.
+   * Only updates local state (pending status in UI) — Firestore write is handled by PlansPage.
+   */
   const submitPaymentRequest = useCallback(
     (planId: string, upiRef: string, screenshotUrl: string) => {
       const req: PaymentRequest = {
@@ -898,8 +879,6 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
           ...prev.notifications,
         ],
       }));
-      // Note: Firestore write is handled by PlansPage via savePaymentToFirestore()
-      // This function only updates local UI state
     },
     [],
   );
@@ -1009,9 +988,6 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         status: "pending",
         timestamp: Date.now(),
       };
-
-      // NOTE: Do NOT auto-activate user here.
-      // User activation only happens when admin approves the order.
       setUserData((prev) => ({
         ...prev,
         orders: [order, ...prev.orders],
@@ -1039,133 +1015,59 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
   }, []);
 
   /**
-   * markUserPaid: marks paidUser=true + selectedPlan in Firestore,
-   * then credits tiered commission to referrer. Idempotent — won't double-pay.
-   * Commission: ₹599→₹100, ₹1999→₹300, ₹2999→₹500
+   * markUserPaid — marks paidUser=true + selectedPlan in Firestore.
+   * Used only by confirm-payment flow. Does NOT credit wallet to the purchasing user.
    */
-  const REFERRAL_COMMISSION: Record<number, number> = {
-    599: 40,
-    999: 70,
-    1999: 140,
-    2999: 210,
-  };
-
   const markUserPaid = useCallback(
     async (planAmount: 599 | 999 | 1999 | 2999) => {
       if (!currentUser?.id) return;
-      const commission = REFERRAL_COMMISSION[planAmount] ?? 100;
 
-      // Duplicate guard: check if already paid (from Firestore)
       const userRef = doc(db, "users", currentUser.id);
-      let userSnap: Awaited<ReturnType<typeof getDoc>>;
       try {
-        userSnap = await getDoc(userRef);
-      } catch {
-        // Firestore unreachable — update local state only
-        setUserData((prev) => ({
-          ...prev,
-          paidUser: true,
-          selectedPlan: planAmount,
-          isActive: true,
-          userStatus: "active" as UserStatus,
-        }));
-        if (currentUser.id) {
-          saveUserToUsersArray(currentUser.id, {
+        const userSnap = await getDoc(userRef);
+        if (
+          userSnap.exists() &&
+          (userSnap.data() as Record<string, unknown>)?.paidUser === true
+        ) {
+          // Already paid — just sync local state
+          const existingPlan = (userSnap.data() as Record<string, unknown>)
+            ?.selectedPlan as number | undefined;
+          setUserData((prev) => ({
+            ...prev,
             paidUser: true,
-            selectedPlan: planAmount,
-            isActive: true,
-            userStatus: "active",
-          });
+            selectedPlan:
+              (existingPlan as 599 | 999 | 1999 | 2999 | null) ?? planAmount,
+          }));
+          return;
         }
-        return;
-      }
 
-      if (
-        userSnap.exists() &&
-        (userSnap.data() as Record<string, unknown>)?.paidUser === true
-      ) {
-        // Already paid — just sync local state
-        const existingPlan = (userSnap.data() as Record<string, unknown>)
-          ?.selectedPlan as number | undefined;
-        setUserData((prev) => ({
-          ...prev,
-          paidUser: true,
-          selectedPlan:
-            (existingPlan as 599 | 999 | 1999 | 2999 | null) ?? planAmount,
-        }));
-        return;
-      }
-
-      // Mark user as paid + save selected plan in Firestore
-      try {
         await setDoc(
           userRef,
           { paidUser: true, selectedPlan: planAmount },
           { merge: true },
         );
       } catch {
-        // ignore write failure — still update locally
+        // Firestore unreachable — update locally only
       }
 
-      // Update local state
       setUserData((prev) => ({
         ...prev,
         paidUser: true,
         selectedPlan: planAmount,
-        isActive: true,
-        userStatus: "active" as UserStatus,
       }));
-
-      // Update localStorage users array
       if (currentUser.id) {
         saveUserToUsersArray(currentUser.id, {
           paidUser: true,
           selectedPlan: planAmount,
-          isActive: true,
-          userStatus: "active",
         });
       }
-
-      // Credit tiered commission to referrer if user was referred
-      const referredBy = userSnap.exists()
-        ? ((userSnap.data() as Record<string, unknown>)?.referredBy as
-            | string
-            | undefined)
-        : userData.uplineCode;
-
-      if (referredBy && referredBy !== currentUser.referralCode) {
-        try {
-          const usersRef = collection(db, "users");
-          const q = query(usersRef, where("referralCode", "==", referredBy));
-          const snap = await getDocs(q);
-          if (!snap.empty) {
-            const referrerDoc = snap.docs[0];
-            const referrerId = referrerDoc.id;
-            const referrerRef = doc(db, "users", referrerId);
-            // Atomic increment wallet by tiered commission
-            await updateDoc(referrerRef, {
-              wallet: increment(commission),
-            });
-            // If referrer is current user (edge case), update local state too
-            if (referrerId === currentUser.id) {
-              setUserData((prev) => ({
-                ...prev,
-                walletBalance: prev.walletBalance + commission,
-              }));
-            }
-          }
-        } catch {
-          // Referrer credit failed silently — don't block user
-        }
-      }
     },
-    [currentUser, userData.uplineCode],
+    [currentUser],
   );
 
   // Admin actions
   const adminApprovePayment = useCallback(
     (requestId: string) => {
-      // Also persist isActive + userStatus to "users" array so it survives logout
       if (currentUser?.id) {
         saveUserToUsersArray(currentUser.id, {
           isActive: true,
@@ -1212,7 +1114,6 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
           ],
         };
       });
-      // Also update Firestore paymentRequest status
       if (isFirebaseConfigured) {
         setDoc(
           doc(db, "paymentRequests", requestId),
@@ -1353,13 +1254,11 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         const wallets: Record<string, number> = stored
           ? JSON.parse(stored)
           : {};
-        const current = wallets[userId] ?? 0;
-        wallets[userId] = current + amount;
+        wallets[userId] = (wallets[userId] ?? 0) + amount;
         localStorage.setItem(WALLETS_KEY, JSON.stringify(wallets));
       } catch {
         // ignore
       }
-      // If it's the current user, also update in-memory
       if (userId === "current") {
         adminAdjustWallet(amount, description);
       }
@@ -1396,14 +1295,8 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  /**
-   * Admin sets a specific user status: "active" | "inactive" | "hold"
-   * Updates localStorage "users" array and Firestore (background).
-   * If the target is the currently logged-in user, also updates in-memory.
-   */
   const adminSetUserStatus = useCallback(
     async (userId: string, status: UserStatus) => {
-      // 1. Update localStorage "users" array
       try {
         const raw = localStorage.getItem(USERS_KEY);
         const users: FirestoreUser[] = raw ? JSON.parse(raw) : [];
@@ -1420,7 +1313,6 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         // ignore
       }
 
-      // 2. If updating current session user, also update in-memory
       if (currentUser?.id === userId) {
         setUserData((prev) => ({
           ...prev,
@@ -1429,7 +1321,6 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
         }));
       }
 
-      // 3. Try Firestore update if configured (with 5-second timeout)
       if (isFirebaseConfigured) {
         try {
           await Promise.race([
@@ -1442,12 +1333,42 @@ export function GuccoraProvider({ children }: { children: ReactNode }) {
             ),
           ]);
         } catch {
-          // ignore — offline or timed out
+          // ignore
         }
       }
     },
     [currentUser?.id],
   );
+
+  // ── Save payment to Firestore when user submits ───────────────────────────
+  const savePaymentToFirestoreContext = useCallback(
+    async (params: {
+      planId: string;
+      upiRef: string;
+      screenshotBase64: string;
+      planAmount: number;
+    }) => {
+      if (!currentUser) return;
+      try {
+        await addDoc(collection(db, "payments"), {
+          userId: currentUser.id || currentUser.phone || "",
+          name: currentUser.name ?? "",
+          phone: currentUser.phone ?? "",
+          planAmount: params.planAmount,
+          UTR: params.upiRef,
+          screenshot: params.screenshotBase64,
+          status: "pending",
+          createdAt: Date.now(),
+        });
+      } catch {
+        // ignore — PlansPage handles this directly via savePaymentToFirestore()
+      }
+    },
+    [currentUser],
+  );
+
+  // Expose savePaymentToFirestoreContext on context for optional use
+  void savePaymentToFirestoreContext;
 
   return (
     <GuccoraContext.Provider

@@ -1,3 +1,6 @@
+/**
+ * mlmTree.ts — MLM binary tree helpers (Firestore-backed).
+ */
 import {
   collection,
   doc,
@@ -35,7 +38,6 @@ export type FirestoreUser = {
   createdAt: number;
 };
 
-/** Wraps a promise with a timeout. Rejects with Error("timeout") if ms elapses first. */
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
     promise,
@@ -45,9 +47,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
-/**
- * Find a user doc by their referralCode
- */
 export async function getUserByReferralCode(
   referralCode: string,
 ): Promise<FirestoreUser | null> {
@@ -64,12 +63,6 @@ export async function getUserByReferralCode(
   }
 }
 
-/**
- * BFS to find the next available slot under `rootId` for the given preferred position.
- * Returns { parentId, position } of the available slot.
- * If rootId itself has the preferred side empty, use it.
- * Otherwise BFS level-by-level and return first empty left or right.
- */
 export async function findAvailableSlot(
   rootId: string,
   preferredPosition: "left" | "right",
@@ -83,18 +76,16 @@ export async function findAvailableSlot(
       const snap = await withTimeout(getDoc(doc(db, "users", currentId)), 5000);
       if (snap.exists()) currentDoc = snap.data() as FirestoreUser;
     } catch {
-      // ignore — treat as missing node
+      // ignore
     }
     if (!currentDoc) continue;
 
-    // Check preferred position first
     if (preferredPosition === "left" && !currentDoc.leftChild) {
       return { parentId: currentId, position: "left" };
     }
     if (preferredPosition === "right" && !currentDoc.rightChild) {
       return { parentId: currentId, position: "right" };
     }
-    // Check opposite position
     if (preferredPosition === "left" && !currentDoc.rightChild) {
       return { parentId: currentId, position: "right" };
     }
@@ -102,22 +93,13 @@ export async function findAvailableSlot(
       return { parentId: currentId, position: "left" };
     }
 
-    // Both filled — enqueue children
     if (currentDoc.leftChild) queue.push(currentDoc.leftChild);
     if (currentDoc.rightChild) queue.push(currentDoc.rightChild);
   }
 
-  // Fallback — return root with preferred position (should not happen in practice)
   return { parentId: rootId, position: preferredPosition };
 }
 
-/**
- * Place a new user in the tree.
- * 1. Find the sponsor by sponsorId
- * 2. BFS to find available slot under sponsor
- * 3. Update parent's leftChild or rightChild in Firestore
- * Returns { parentId, position }
- */
 export async function placeUserInTree(
   newUserId: string,
   sponsorId: string,
@@ -134,7 +116,7 @@ export async function placeUserInTree(
       5000,
     );
   } catch {
-    // ignore if offline or timed out
+    // ignore
   }
   return { parentId, position };
 }
